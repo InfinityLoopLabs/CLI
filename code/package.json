@@ -1,6 +1,6 @@
 {
   "name": "@infinityloop.labs/code-cli",
-  "version": "0.0.6",
+  "version": "0.0.10",
   "main": "dist/index.js",
   "types": "./dist/index.d.ts",
   "publishConfig": {
@@ -22,7 +22,7 @@
   "license": "ISC",
   "homepage": "https://github.com/",
   "scripts": {
-    "bump": "npm version patch",
+    "bump": "npm run build && npm version patch",
     "rollup": "rm -rf dist && rollup -c",
     "build": "npm run rollup",
     "eslint": "eslint --fix --ext .js,.jsx,.tsx,.ts src"
