@@ -1,9 +1,9 @@
 import fs from 'fs/promises'
 import path from 'path'
 
-export const getGoModuleName = async (projectRoot: string = '..'): Promise<string> => {
+export const getGoModuleName = async (projectRoot: string = process.cwd()): Promise<string> => {
   try {
-    const goModPath = path.resolve(__dirname, projectRoot, 'go.mod')
+    const goModPath = path.resolve(projectRoot, 'go.mod')
     const content = await fs.readFile(goModPath, 'utf-8')
     
     // Extract module name from first line: "module github.com/m1max/counter"

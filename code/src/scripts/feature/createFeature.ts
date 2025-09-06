@@ -1,8 +1,8 @@
 import fs from 'fs/promises'
 import path from 'path'
-import { getGoModuleName } from '../utils/readGoMod'
 
 type GoConfigType = {
+  goModPath: string
   importPath: {
     modulePrefix: string
     featureBase: string
@@ -64,15 +64,17 @@ const copyFiles = async ({ name, source, destination, goConfig }: PayloadType) =
         // Copy file with replacements
         const fileContent = await fs.readFile(sourcePath, 'utf-8')
         
-        // Get the actual module name from go.mod
-        const actualModuleName = await getGoModuleName('../../..')
+        // Get the actual module name from config
+        const actualModuleName = goConfig.importPath.modulePrefix
         
         // Replace Sample/sample with actual feature name and module path
         const updatedContent = fileContent
           .replace(/Sample/g, name) // Sample -> User
-          .replace(/sample/g, name.toLowerCase()) // sample -> user
+          .replace(/sample/g, name.toLowerCase()) // sample -> user  
           .replace(/SAMPLE/g, name.toUpperCase()) // SAMPLE -> USER
           .replace(/SAMPLE_MODULE_PATH/g, actualModuleName) // SAMPLE_MODULE_PATH -> github.com/m1max/counter
+          // Also replace any generated placeholders that might have been created
+          .replace(new RegExp(`${name.toUpperCase()}_MODULE_PATH`, 'g'), actualModuleName)
 
         await fs.writeFile(destinationPath, updatedContent, 'utf-8')
       }
@@ -116,8 +118,8 @@ const addImports = async (filePath: string, featureName: string, goConfig: GoCon
     const content = await fs.readFile(filePath, 'utf-8')
     const lowerFeatureName = featureName.toLowerCase()
     
-    // Get actual module name instead of hardcoded one
-    const actualModuleName = await getGoModuleName('../../..')
+    // Get actual module name from config
+    const actualModuleName = goConfig.importPath.modulePrefix
     const featureBase = goConfig.importPath.featureBase
     const importToAdd = `\t"${actualModuleName}/${featureBase}/${lowerFeatureName}/domain/repository"\n\t"${actualModuleName}/${featureBase}/${lowerFeatureName}/infrastructure/persistence"`
     

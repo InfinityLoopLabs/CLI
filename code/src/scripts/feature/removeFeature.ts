@@ -3,6 +3,7 @@ import fs from 'fs/promises'
 import { deleteDirectory } from '../utils/removeFolder'
 
 type GoConfigType = {
+  goModPath: string
   importPath: {
     modulePrefix: string
     featureBase: string
