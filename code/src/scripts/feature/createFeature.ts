@@ -1,5 +1,6 @@
 import fs from 'fs/promises'
 import path from 'path'
+import { getGoModuleName } from '../utils/readGoMod'
 
 type GoConfigType = {
   importPath: {
@@ -40,7 +41,7 @@ type PayloadType = {
   goConfig: GoConfigType
 }
 
-const copyFiles = async ({ name, source, destination }: Omit<PayloadType, 'goConfig'>) => {
+const copyFiles = async ({ name, source, destination, goConfig }: PayloadType) => {
   try {
     const files = await fs.readdir(source, { withFileTypes: true })
 
@@ -57,16 +58,21 @@ const copyFiles = async ({ name, source, destination }: Omit<PayloadType, 'goCon
           source: sourcePath,
           destination: destinationPath,
           name,
+          goConfig,
         })
       } else {
         // Copy file with replacements
         const fileContent = await fs.readFile(sourcePath, 'utf-8')
         
-        // Replace Sample/sample with actual feature name
+        // Get the actual module name from go.mod
+        const actualModuleName = await getGoModuleName('../../..')
+        
+        // Replace Sample/sample with actual feature name and module path
         const updatedContent = fileContent
           .replace(/Sample/g, name) // Sample -> User
           .replace(/sample/g, name.toLowerCase()) // sample -> user
           .replace(/SAMPLE/g, name.toUpperCase()) // SAMPLE -> USER
+          .replace(/SAMPLE_MODULE_PATH/g, actualModuleName) // SAMPLE_MODULE_PATH -> github.com/m1max/counter
 
         await fs.writeFile(destinationPath, updatedContent, 'utf-8')
       }
@@ -110,10 +116,10 @@ const addImports = async (filePath: string, featureName: string, goConfig: GoCon
     const content = await fs.readFile(filePath, 'utf-8')
     const lowerFeatureName = featureName.toLowerCase()
     
-    // Build imports from config
-    const modulePrefix = goConfig.importPath.modulePrefix
+    // Get actual module name instead of hardcoded one
+    const actualModuleName = await getGoModuleName('../../..')
     const featureBase = goConfig.importPath.featureBase
-    const importToAdd = `\t"${modulePrefix}/${featureBase}/${lowerFeatureName}/domain/repository"\n\t"${modulePrefix}/${featureBase}/${lowerFeatureName}/infrastructure/persistence"`
+    const importToAdd = `\t"${actualModuleName}/${featureBase}/${lowerFeatureName}/domain/repository"\n\t"${actualModuleName}/${featureBase}/${lowerFeatureName}/infrastructure/persistence"`
     
     // Find the import block and add our imports
     const updatedContent = content.replace(
@@ -132,7 +138,7 @@ export const createFeature = async (payload: PayloadType) => {
   const lowerName = name.toLowerCase()
 
   // Step 1: Copy template files
-  await copyFiles({ name, source, destination })
+  await copyFiles({ name, source, destination, goConfig })
 
   // Step 2: Update provider files with DI
   const { repository, usecase, handler, database } = goConfig.diInjection
