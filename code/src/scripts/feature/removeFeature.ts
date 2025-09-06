@@ -43,19 +43,19 @@ type PayloadType = {
 const removeFromProviderFile = async (filePath: string, featureName: string, goConfig: GoConfigType) => {
   try {
     const content = await fs.readFile(filePath, 'utf-8')
-    
+
     // Remove provider function
     const functionRegex = new RegExp(
       `\\n\\nfunc Provide${featureName}[\\s\\S]*?\\n}`,
       'g'
     )
-    
+
     // Remove from fx.Provide
     const provideRegex = new RegExp(
       `\\n\\s*fx\\.Provide\\(Provide${featureName}[^,]*\\),?`,
       'g'
     )
-    
+
     // Remove imports related to this feature using config paths
     const modulePrefix = goConfig.importPath.modulePrefix
     const featureBase = goConfig.importPath.featureBase
@@ -79,7 +79,7 @@ const removeFromProviderFile = async (filePath: string, featureName: string, goC
 const removeFromDatabase = async (filePath: string, featureName: string) => {
   try {
     const content = await fs.readFile(filePath, 'utf-8')
-    
+
     // Remove migration line
     const migrationRegex = new RegExp(
       `\\n\\s*&${featureName.toLowerCase()}persistence\\.${featureName}Model{},?`,
@@ -97,7 +97,7 @@ export const removeFeature = async (payload: PayloadType) => {
   const { name, destination, goConfig } = payload
   const capitalizedName = name.charAt(0).toUpperCase() + name.slice(1)
 
-  // Step 1: Remove feature directory
+  // Step 1: Remove the feature directory
   await deleteDirectory(path.join(destination, name))
 
   // Step 2: Clean up provider files
