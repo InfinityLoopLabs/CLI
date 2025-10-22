@@ -12,6 +12,7 @@ const copyFiles = async ({ name, source, destination }: PayloadType) => {
   try {
     const files = await fs.readdir(source, { withFileTypes: true })
 
+
     // Создание целевой директории, если она не существует
     await fs.mkdir(destination, { recursive: true })
 
