@@ -8,6 +8,8 @@ type PayloadType = {
 }
 
 const copyFiles = async ({ name, source, destination }: PayloadType) => {
+  const upperCaseName = name ? name[0].toUpperCase() + name.slice(1) : name
+  const lowerCaseName = name ? name[0].toLowerCase() + name.slice(1) : name
   try {
     const files = await fs.readdir(source, { withFileTypes: true })
 
@@ -28,25 +30,21 @@ const copyFiles = async ({ name, source, destination }: PayloadType) => {
       } else {
         // Если текущий файл является файлом
         const fileContent = await fs.readFile(sourcePath, 'utf-8')
+        const updatedContent = fileContent.replace(/Sample|sample/g, (match) => {
+          if (match === 'Sample') {
+            return upperCaseName
+          }
 
-        if (file.name === 'index.tsx') {
-          // Если имя файла равно index.tsx, заменяем слово 'Sample' на name
-          const updatedContent = fileContent.replace(
-            /const sample/g,
-            `const ${name}`
-          )
+          if (match === 'sample') {
+            return lowerCaseName
+          }
+
+          return match
+        })
+
+        if (updatedContent !== fileContent) {
           await fs.writeFile(destinationPath, updatedContent, 'utf-8')
-        }
-        // Меняем имя уникальной переменной
-        else if (file.name === 'name.ts') {
-          const updatedContent = fileContent.replace(
-            /- sample -/g,
-            `- ${name} -`
-          )
-          await fs.writeFile(destinationPath, updatedContent, 'utf-8')
-        }
-        // В противном случае просто копируем файл
-        else {
+        } else {
           await fs.copyFile(sourcePath, destinationPath)
         }
       }
