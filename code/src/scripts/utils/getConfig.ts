@@ -5,14 +5,28 @@ import { ConfigType } from './lib/types'
 // Путь к корневой директории проекта
 const rootDir = process.cwd()
 
-// Путь к файлу конфигурации
-const configFile = path.join(rootDir, '.config.template.js')
+const CONFIG_VARIANTS = ['.config.template.cjs', '.config.template.js', '.config.template.mjs']
+
+const resolveConfigPath = () => {
+  for (const fileName of CONFIG_VARIANTS) {
+    const candidate = path.join(rootDir, fileName)
+
+    if (fs.existsSync(candidate)) {
+      return candidate
+    }
+  }
+
+  return null
+}
 
 export const getConfig = (): ConfigType | undefined => {
-  // Проверяем наличие файла конфигурации
-  if (fs.existsSync(configFile)) {
-    return require(configFile)
-  } else {
-    console.error('Конфигурационный файл .config.template.js не найден!')
+  const configPath = resolveConfigPath()
+
+  if (configPath) {
+    return require(configPath)
   }
+
+  console.error(
+    'Конфигурационный файл .config.template.cjs или .config.template.js не найден!'
+  )
 }
