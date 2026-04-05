@@ -18,7 +18,7 @@ async function getCurrentBranch(cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-test("merge-template pulls files from template repository", async () => {
+test("merge-template mirrors full template repository by default", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ill-merge-template-"));
 
   try {
@@ -50,7 +50,7 @@ test("merge-template pulls files from template repository", async () => {
       },
       {
         configPath: "infinityloop.config.js",
-        commandKey: "syncTemplate",
+        commandKey: "sync",
         stepIndex: 0,
       },
     );
@@ -62,9 +62,69 @@ test("merge-template pulls files from template repository", async () => {
 
     const mergedFile = await readFile(path.join(targetRepo, "template.txt"), "utf8");
     assert.equal(mergedFile, "from template\n");
+    await assert.rejects(readFile(path.join(targetRepo, "project.txt"), "utf8"));
 
     const status = await execFileAsync("git", ["status", "--short"], { cwd: targetRepo });
     assert.match(status.stdout, /A  template\.txt/);
+    assert.match(status.stdout, /D  project\.txt/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merge-template propagates template deletions in public", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-template-public-"));
+
+  try {
+    const sourceRepo = path.join(root, "source");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(path.join(sourceRepo, "public"), { recursive: true });
+    await writeFile(path.join(sourceRepo, "public", "hero.png"), "hero-v1", "utf8");
+    await runGit(["init"], sourceRepo);
+    await runGit(["config", "user.name", "ILL Test"], sourceRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], sourceRepo);
+    await runGit(["add", "."], sourceRepo);
+    await runGit(["commit", "-m", "template v1"], sourceRepo);
+
+    await rm(path.join(sourceRepo, "public", "hero.png"), { force: true });
+    await writeFile(path.join(sourceRepo, "public", "logo.png"), "logo-v2", "utf8");
+    await runGit(["add", "-A"], sourceRepo);
+    await runGit(["commit", "-m", "template v2"], sourceRepo);
+    const sourceBranch = await getCurrentBranch(sourceRepo);
+
+    await mkdir(path.join(targetRepo, "public"), { recursive: true });
+    await writeFile(path.join(targetRepo, "project.txt"), "project", "utf8");
+    await writeFile(path.join(targetRepo, "public", "hero.png"), "old-local-copy", "utf8");
+    await writeFile(path.join(targetRepo, "public", "extra.png"), "must-be-removed", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "project init"], targetRepo);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: sourceRepo,
+        ref: sourceBranch,
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    await assert.rejects(readFile(path.join(targetRepo, "public", "hero.png"), "utf8"));
+    await assert.rejects(readFile(path.join(targetRepo, "public", "extra.png"), "utf8"));
+    const logo = await readFile(path.join(targetRepo, "public", "logo.png"), "utf8");
+    assert.equal(logo, "logo-v2");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -81,7 +141,7 @@ test("merge-template fails outside git repository", async () => {
       },
       {
         configPath: "infinityloop.config.js",
-        commandKey: "syncTemplate",
+        commandKey: "sync",
         stepIndex: 0,
       },
     );

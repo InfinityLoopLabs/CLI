@@ -25,6 +25,7 @@ test("init creates infinityloop config file with repo and ref", async () => {
     assert.match(content, /repo: TEMPLATE_REPO/);
     assert.match(content, /ref: TEMPLATE_REF/);
     assert.match(content, /allowNonEmpty: true/);
+    assert.match(content, /sync: \[/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

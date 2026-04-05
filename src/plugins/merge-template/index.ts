@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { readdir, rm } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
 
@@ -7,7 +9,6 @@ const execFileAsync = promisify(execFile);
 type MergeTemplatePayload = {
   repo: string;
   ref: string;
-  allowUnrelatedHistories: boolean;
 };
 
 type ExecFileError = Error & {
@@ -60,19 +61,9 @@ function parseMergeTemplatePayload(rawStep: CommandStepRaw, context: PluginParse
     );
   }
 
-  if (
-    rawStep.allowUnrelatedHistories !== undefined &&
-    typeof rawStep.allowUnrelatedHistories !== "boolean"
-  ) {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "merge-template" field "allowUnrelatedHistories" must be a boolean.`,
-    );
-  }
-
   return {
     repo: rawStep.repo,
     ref: (rawStep.ref as string | undefined) ?? "main",
-    allowUnrelatedHistories: rawStep.allowUnrelatedHistories !== false,
   };
 }
 
@@ -112,6 +103,19 @@ async function runGit(args: string[], cwd: string): Promise<void> {
   }
 }
 
+async function mirrorAllFromTemplate(cwd: string): Promise<void> {
+  const entries = await readdir(cwd, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === ".git") {
+      continue;
+    }
+    await rm(path.join(cwd, entry.name), { recursive: true, force: true });
+  }
+
+  await runGit(["checkout", "FETCH_HEAD", "--", "."], cwd);
+  await runGit(["add", "-A"], cwd);
+}
+
 async function executeMergeTemplatePayload(
   payload: MergeTemplatePayload,
   context: PluginExecuteContext,
@@ -126,13 +130,11 @@ async function executeMergeTemplatePayload(
     await runGit(["remote", "add", remoteName, repo], context.cwd);
     await runGit(["fetch", "--depth", "1", remoteName, ref], context.cwd);
 
-    const mergeArgs = ["merge", "--no-ff", "--no-commit"];
-    if (payload.allowUnrelatedHistories) {
-      mergeArgs.push("--allow-unrelated-histories");
-    }
+    const mergeArgs = ["merge", "--no-ff", "--no-commit", "--allow-unrelated-histories"];
     mergeArgs.push("FETCH_HEAD");
 
     await runGit(mergeArgs, context.cwd);
+    await mirrorAllFromTemplate(context.cwd);
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }

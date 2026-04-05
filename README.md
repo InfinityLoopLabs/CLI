@@ -44,6 +44,12 @@ Initialize config in current folder:
 ill init --repo owner/template-repo --target-repo owner/product-repo --ref main
 ```
 
+Sync with template repository using configured command:
+
+```bash
+ill sync
+```
+
 Run any configured command key:
 
 ```bash
@@ -106,7 +112,7 @@ module.exports = {
 
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
-- `merge-template`: fetch and merge template repository into current git project.
+- `merge-template`: fetch and merge template repository into current git project, then mirror full template snapshot so deletions and additions are applied automatically.
 - `insert`: insert `line` after `placeholder` in `file`.
 - `remove-line`: remove a line from `file` by text match.
 - `remove`: delete file/folder at `target`.
