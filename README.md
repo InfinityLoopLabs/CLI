@@ -105,7 +105,7 @@ module.exports = {
 ## Step Types
 
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
-- `download`: clone template repository and copy into `cwd` without git artifacts.
+- `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
 - `merge-template`: fetch and merge template repository into current git project.
 - `insert`: insert `line` after `placeholder` in `file`.
 - `remove-line`: remove a line from `file` by text match.

@@ -58,7 +58,8 @@ test("download plugin clones template and removes git-related files", async () =
     const source = await readFile(path.join(targetDir, "src", "index.ts"), "utf8");
     assert.equal(source, "export const value = 1;\n");
 
-    await assert.rejects(readFile(path.join(targetDir, ".gitignore"), "utf8"));
+    const gitignore = await readFile(path.join(targetDir, ".gitignore"), "utf8");
+    assert.equal(gitignore, "node_modules\n");
     await assert.rejects(readFile(path.join(targetDir, ".git", "HEAD"), "utf8"));
     await assert.rejects(readFile(path.join(targetDir, ".github", "workflows", "ci.yml"), "utf8"));
   } finally {
@@ -78,6 +79,7 @@ test("download plugin fails on non-empty target without allowNonEmpty", async ()
       {
         type: "download",
         repo: "owner/repo",
+        allowNonEmpty: false,
       },
       {
         configPath: "infinityloop.config.js",

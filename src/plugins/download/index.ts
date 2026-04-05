@@ -49,7 +49,7 @@ function parseDownloadPayload(rawStep: CommandStepRaw, context: PluginParseConte
   return {
     repo: rawStep.repo,
     ref: rawStep.ref as string | undefined,
-    allowNonEmpty: rawStep.allowNonEmpty === true,
+    allowNonEmpty: rawStep.allowNonEmpty !== false,
   };
 }
 
@@ -77,7 +77,7 @@ function normalizeRepoSource(repo: string): string {
 }
 
 function isGitRelatedName(name: string): boolean {
-  return name === ".git" || name === ".github" || name.startsWith(".git");
+  return name === ".git" || name === ".github";
 }
 
 async function ensureTargetIsEmpty(cwd: string): Promise<void> {

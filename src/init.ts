@@ -24,29 +24,30 @@ function renderConfigTemplate(templateRepo: string, targetRepo: string, ref: str
   const targetRepoValue = JSON.stringify(targetRepo);
   const refValue = JSON.stringify(ref);
 
-  return `const templateRepo = ${templateRepoValue};
-const targetRepo = ${targetRepoValue};
-const templateRef = ${refValue};
+  return `const TEMPLATE_REPO = ${templateRepoValue};
+const TARGET_REPO = ${targetRepoValue};
+const TEMPLATE_REF = ${refValue};
 
 module.exports = {
   meta: {
-    templateRepo,
-    targetRepo,
-    templateRef,
+    templateRepo: TEMPLATE_REPO,
+    targetRepo: TARGET_REPO,
+    templateRef: TEMPLATE_REF,
   },
   commands: {
     bootstrap: [
       {
         type: "download",
-        repo: templateRepo,
-        ref: templateRef,
+        repo: TEMPLATE_REPO,
+        ref: TEMPLATE_REF,
+        allowNonEmpty: true,
       },
     ],
     syncTemplate: [
       {
         type: "merge-template",
-        repo: templateRepo,
-        ref: templateRef,
+        repo: TEMPLATE_REPO,
+        ref: TEMPLATE_REF,
         allowUnrelatedHistories: true,
       },
     ],
