@@ -12,6 +12,7 @@ type MergeTemplatePayload = {
 };
 
 type ExecFileError = Error & {
+  code?: number | string;
   stderr?: string | Buffer;
 };
 
@@ -103,6 +104,27 @@ async function runGit(args: string[], cwd: string): Promise<void> {
   }
 }
 
+async function hasMergeInProgress(cwd: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd });
+    return true;
+  } catch (error) {
+    const execError = error as ExecFileError;
+    if (execError.code === 1) {
+      return false;
+    }
+    throw new Error(`Failed to inspect merge state. ${extractExecErrorDetails(error)}`);
+  }
+}
+
+async function ensureNoMergeInProgress(cwd: string): Promise<void> {
+  if (await hasMergeInProgress(cwd)) {
+    throw new Error(
+      'Unfinished merge detected (MERGE_HEAD exists). Resolve conflicts in your IDE, then run "git add -A && git commit"; or run "git merge --abort" to cancel.',
+    );
+  }
+}
+
 async function mirrorAllFromTemplate(cwd: string): Promise<void> {
   const entries = await readdir(cwd, { withFileTypes: true });
   for (const entry of entries) {
@@ -121,6 +143,7 @@ async function executeMergeTemplatePayload(
   context: PluginExecuteContext,
 ): Promise<void> {
   await ensureGitRepository(context.cwd);
+  await ensureNoMergeInProgress(context.cwd);
 
   const repo = normalizeRepoSource(resolveVariables(payload.repo, context.variables));
   const ref = resolveVariables(payload.ref, context.variables);

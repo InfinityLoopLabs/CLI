@@ -112,7 +112,7 @@ module.exports = {
 
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
-- `merge-template`: fetch and merge template repository into current git project, then mirror full template snapshot so deletions and additions are applied automatically.
+- `merge-template`: starts merge from template and mirrors full template snapshot on success. If merge is already in progress, CLI stops and asks you to resolve it first.
 - `insert`: insert `line` after `placeholder` in `file`.
 - `remove-line`: remove a line from `file` by text match.
 - `remove`: delete file/folder at `target`.

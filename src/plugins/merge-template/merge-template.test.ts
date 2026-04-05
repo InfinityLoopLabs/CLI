@@ -157,3 +157,66 @@ test("merge-template fails outside git repository", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("merge-template stops when unfinished merge exists and asks to resolve", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-template-abort-"));
+
+  try {
+    const sourceRepo = path.join(root, "source");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(sourceRepo, { recursive: true });
+    await writeFile(path.join(sourceRepo, "conflict.txt"), "from-template\n", "utf8");
+    await runGit(["init"], sourceRepo);
+    await runGit(["config", "user.name", "ILL Test"], sourceRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], sourceRepo);
+    await runGit(["add", "."], sourceRepo);
+    await runGit(["commit", "-m", "template init"], sourceRepo);
+    const sourceBranch = await getCurrentBranch(sourceRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(path.join(targetRepo, "conflict.txt"), "from-project\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "project init"], targetRepo);
+
+    await runGit(["remote", "add", "manual", sourceRepo], targetRepo);
+    await runGit(["fetch", "--depth", "1", "manual", sourceBranch], targetRepo);
+    await execFileAsync(
+      "git",
+      ["merge", "--no-ff", "--no-commit", "--allow-unrelated-histories", "FETCH_HEAD"],
+      { cwd: targetRepo },
+    ).catch(() => undefined);
+
+    const mergeHeadBefore = await execFileAsync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: targetRepo });
+    assert.ok(mergeHeadBefore.stdout.trim().length > 0);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: sourceRepo,
+        ref: sourceBranch,
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await assert.rejects(
+      mergeTemplatePlugin.execute(payload, {
+        cwd: targetRepo,
+        variables: {},
+      }),
+      /Unfinished merge detected/,
+    );
+
+    const mergeHeadAfter = await execFileAsync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: targetRepo });
+    assert.ok(mergeHeadAfter.stdout.trim().length > 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
