@@ -122,7 +122,7 @@ module.exports = {
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
 - `copy`: copy file/folder from `from` to `to` without substitutions.
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
-- `merge-template`: starts merge from template and mirrors full template snapshot on success. If merge is already in progress, CLI stops and asks you to resolve it first.
+- `merge-template`: подтягивает снапшот шаблона, строит 3-way patch и накладывает его поверх текущей рабочей копии. Локальные файлы, которых нет в шаблоне, не удаляются по умолчанию; чтобы синхронизировать удаления, укажите `allowDeletes: true`. Массив `protectedPaths` (пути относительно корня проекта) позволяет заблокировать удаление конкретных директорий/файлов даже при включённых удалениях.
 - `insert`: insert `line` after `placeholder` in `file`.
 - `replace`: replace the first occurrence of `search` with `replace` in `file`.
 - `rename`: replace tokens in file contents and file/directory names inside `target` with case preservation (`Sample` / `sample` / `SAMPLE`).
@@ -163,5 +163,14 @@ module.exports = {
   file: "app/store/index.ts",
   placeholder: "// Services: Start",
   line: "  ${name}: ${Name}Reducer,",
+}
+
+// merge-template example that blocks deletions but still fetches updates
+{
+  type: "merge-template",
+  repo: TEMPLATE_REPO,
+  ref: TEMPLATE_REF,
+  allowDeletes: false,
+  protectedPaths: [".cli", "app/business"],
 }
 ```
