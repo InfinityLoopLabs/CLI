@@ -52,7 +52,16 @@ function assignVariable(target: Record<string, string | undefined>, key: string,
 
 async function executeReadPayload(payload: ReadPayload, context: PluginExecuteContext): Promise<void> {
   const filePath = path.resolve(context.cwd, renderTemplateValue(payload.file, context.variables));
-  const content = await readFile(filePath, "utf8");
+  let content: string;
+  try {
+    content = await readFile(filePath, "utf8");
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
   const entries = parseCliContent(content, filePath);
 
   for (const [key, value] of Object.entries(entries)) {

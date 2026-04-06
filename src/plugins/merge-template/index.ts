@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -56,7 +57,7 @@ function parseMergeTemplatePayload(rawStep: CommandStepRaw, context: PluginParse
   return {
     repo: rawStep.repo,
     ref: (rawStep.ref as string | undefined) ?? "main",
-    allowDeletes: (rawStep.allowDeletes as boolean | undefined) ?? false,
+    allowDeletes: (rawStep.allowDeletes as boolean | undefined) ?? true,
     protectedPaths: parseProtectedPaths(rawStep.protectedPaths, context),
   };
 }
@@ -273,6 +274,214 @@ async function previewPatch(payload: MergeTemplatePayload, cwd: string): Promise
   return { patch, deletedFiles };
 }
 
+type DeletionDecision = {
+  proceed: boolean;
+  keep: Set<string>;
+};
+
+type SelectionResult = {
+  cancelled: boolean;
+  deletes: Set<string>;
+};
+
+function canPromptForDeletes(): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY);
+}
+
+function hideCursor(): void {
+  process.stdout.write("\x1B[?25l");
+}
+
+function showCursor(): void {
+  process.stdout.write("\x1B[?25h");
+}
+
+async function runInteractiveSelection(files: string[]): Promise<SelectionResult> {
+  if (files.length === 0) {
+    return { cancelled: false, deletes: new Set() };
+  }
+
+  return new Promise((resolve, reject) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    const deletes = new Set<string>(files);
+    let cursor = 0;
+    let renderedLines = 0;
+    let finished = false;
+
+    const instructions = "Use ↑/↓ or W/S to move, Space toggles delete (x = delete), Enter to continue, q to cancel.";
+
+    const cleanup = () => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      showCursor();
+      stdout.write("\n");
+    };
+
+    const render = () => {
+      const lines: string[] = [instructions, "", ...files.map((file, index) => {
+        const pointer = cursor === index ? ">" : " ";
+        const mark = deletes.has(file) ? "x" : " ";
+        return `${pointer} [${mark}] ${file}`;
+      })];
+
+      if (renderedLines > 0) {
+        stdout.write(`\x1B[${renderedLines}A`);
+        stdout.write("\x1B[0J");
+      }
+
+      stdout.write(lines.join("\n"));
+      stdout.write("\n");
+      renderedLines = lines.length;
+    };
+
+    const finalize = (cancelled: boolean) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cleanup();
+      resolve({ cancelled, deletes });
+    };
+
+    const moveUp = () => {
+      cursor = cursor === 0 ? files.length - 1 : cursor - 1;
+      render();
+    };
+
+    const moveDown = () => {
+      cursor = cursor === files.length - 1 ? 0 : cursor + 1;
+      render();
+    };
+
+    const onData = (chunk: string) => {
+      if (chunk === "\u0003") {
+        cleanup();
+        reject(new Error("Interrupted"));
+        return;
+      }
+
+      if (chunk === "\u001b[A" || chunk === "w" || chunk === "W") {
+        moveUp();
+        return;
+      }
+
+      if (chunk === "\u001b[B" || chunk === "s" || chunk === "S") {
+        moveDown();
+        return;
+      }
+
+      if (chunk === " ") {
+        const file = files[cursor];
+        if (file) {
+          if (deletes.has(file)) {
+            deletes.delete(file);
+          } else {
+            deletes.add(file);
+          }
+          render();
+        }
+        return;
+      }
+
+      if (chunk === "q" || chunk === "Q" || chunk === "\u001b") {
+        finalize(true);
+        return;
+      }
+
+      if (chunk === "\r" || chunk === "\n") {
+        finalize(false);
+      }
+    };
+
+    stdin.setEncoding("utf8");
+    stdin.setRawMode(true);
+    stdin.resume();
+    hideCursor();
+    render();
+    stdin.on("data", onData);
+  });
+}
+
+async function confirmTemplateDeletions(files: string[]): Promise<DeletionDecision> {
+  if (!canPromptForDeletes()) {
+    return { proceed: true, keep: new Set() };
+  }
+
+  const selection = await runInteractiveSelection(files);
+  if (selection.cancelled) {
+    return { proceed: false, keep: new Set() };
+  }
+  const keep = new Set<string>();
+  for (const file of files) {
+    if (!selection.deletes.has(file)) {
+      keep.add(file);
+    }
+  }
+
+  const stdin = process.stdin;
+  const stdout = process.stdout;
+
+  stdout.write(`Delete ${selection.deletes.size} file(s)? Press y to confirm, n or Esc to cancel. `);
+
+  return new Promise(resolve => {
+    const onData = (chunk: string) => {
+      stdin.removeListener("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      showCursor();
+      stdout.write("\n");
+
+      if (chunk === "y" || chunk === "Y") {
+        resolve({ proceed: true, keep });
+      } else {
+        resolve({ proceed: false, keep: new Set() });
+      }
+    };
+
+    stdin.setEncoding("utf8");
+    stdin.setRawMode(true);
+    stdin.resume();
+    hideCursor();
+    stdin.on("data", rawChunk => {
+      const chunk = typeof rawChunk === "string" ? rawChunk : rawChunk.toString("utf8");
+      if (chunk === "y" || chunk === "Y") {
+        onData(chunk);
+      } else if (chunk === "n" || chunk === "N" || chunk === "\u001b") {
+        onData(chunk);
+      }
+    });
+  });
+}
+
+function removeKeptDeletionsFromPatch(patch: string, keep: Set<string>): string {
+  if (keep.size === 0) {
+    return patch;
+  }
+
+  const diffRegex = /^diff --git a\/(.+?) b\/.*\n[\s\S]*?(?=^diff --git |\u0000|\Z)/gm;
+  let result = "";
+  let lastIndex = 0;
+
+  let match: RegExpExecArray | null;
+  while ((match = diffRegex.exec(patch)) !== null) {
+    const start = match.index;
+    const end = diffRegex.lastIndex;
+    const block = patch.slice(start, end);
+    const filePath = match[1];
+
+    result += patch.slice(lastIndex, start);
+    if (!filePath || !keep.has(filePath)) {
+      result += block;
+    }
+    lastIndex = end;
+  }
+
+  result += patch.slice(lastIndex);
+  return result;
+}
+
 async function executeMergeTemplatePayload(
   payload: MergeTemplatePayload,
   context: PluginExecuteContext,
@@ -292,6 +501,7 @@ async function executeMergeTemplatePayload(
     if (!patch) {
       return;
     }
+    let nextPatch = patch;
 
     const templateOwnedDeletions = await filterTemplateOwnedDeletions(deletedFiles, context.cwd);
     if (!payload.allowDeletes && templateOwnedDeletions.length > 0) {
@@ -309,9 +519,26 @@ async function executeMergeTemplatePayload(
           `Template update touches protected paths:\n${formatFileList(protectedDeletions)}\nReview the template change or adjust "protectedPaths".`,
         );
       }
+
+      if (templateOwnedDeletions.length > 0) {
+        const decision = await confirmTemplateDeletions(templateOwnedDeletions);
+        if (!decision.proceed) {
+          throw new Error("Template merge cancelled by user (deletions skipped).");
+        }
+        for (const file of templateOwnedDeletions) {
+          const absolute = path.resolve(context.cwd, file);
+          if (!existsSync(absolute)) {
+            decision.keep.add(file);
+          }
+        }
+        nextPatch = removeKeptDeletionsFromPatch(nextPatch, decision.keep);
+        if (!nextPatch.trim()) {
+          return;
+        }
+      }
     }
 
-    await applyPatch(patch, context.cwd);
+    await applyPatch(nextPatch, context.cwd);
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }

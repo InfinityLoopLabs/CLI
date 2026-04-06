@@ -122,7 +122,7 @@ module.exports = {
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
 - `copy`: copy file/folder from `from` to `to` without substitutions.
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
-- `merge-template`: подтягивает снапшот шаблона, строит 3-way patch и накладывает его поверх текущей рабочей копии. Локальные файлы, которых нет в шаблоне, не удаляются по умолчанию; чтобы синхронизировать удаления, укажите `allowDeletes: true`. Массив `protectedPaths` (пути относительно корня проекта) позволяет заблокировать удаление конкретных директорий/файлов даже при включённых удалениях.
+- `merge-template`: подтягивает снапшот шаблона, строит 3-way patch и накладывает его поверх текущей рабочей копии. По умолчанию CLI предложит выбрать удаляемые файлы в интерактивном режиме. Если удалений быть не должно вовсе, установите `allowDeletes: false`. Массив `protectedPaths` (пути относительно корня проекта) позволяет заблокировать удаление конкретных директорий/файлов даже при включённых удалениях.
 - `insert`: insert `line` after `placeholder` in `file`.
 - `replace`: replace the first occurrence of `search` with `replace` in `file`.
 - `rename`: replace tokens in file contents and file/directory names inside `target` with case preservation (`Sample` / `sample` / `SAMPLE`).
