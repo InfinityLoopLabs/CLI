@@ -128,6 +128,7 @@ module.exports = {
 - `rename`: replace tokens in file contents and file/directory names inside `target` with case preservation (`Sample` / `sample` / `SAMPLE`).
 - `remove-line`: remove a line from `file` by text match.
 - `remove`: delete file/folder at `target`.
+- `read`: load variables from a key=value file (for example `.cli`) and inject them into the command context so subsequent steps can use `${PROJECT_NAME}` placeholders.
 
 ### Template values & variables
 
@@ -136,6 +137,7 @@ module.exports = {
   - `name`, `namePascal`, `nameCamel`, `nameLower`, `nameSnake`, `nameKebab`, `nameScreamingSnake`
   - `kind` (`widget` / `service` when using `ill add|remove`).
 - Any extra CLI flag becomes a variable: `--store-name=SideMenu` exposes `${storeName}`, `--dry-run` sets `${dryRun}` to `"true"`, and disabling flags like `--no-store` / `--nostore` set `${store}` to `"false"` while `${noStore}` becomes `"true"`. Flag names are normalized to camelCase by stripping dashes/underscores, but you can still reference hyphenated names in `when` expressions (e.g. `when: "!no-store"`).
+- The `read` step is typically used to load a `.cli` file with entries like `PROJECT_NAME=my-app`. Each `KEY=VALUE` pair becomes available via `${KEY}` or `${key}` in later steps.
 - For `${variable}` syntax, the placeholder casing controls the transform: `${name}` lowers the first letter, `${Name}` capitalizes it, `${NAME}` uppercases the whole string. Plain `$variable` keeps the stored value.
 - Example:
 

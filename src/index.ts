@@ -21,6 +21,7 @@ export * from "./plugins/replace";
 export * from "./plugins/rename";
 export * from "./plugins/remove-line";
 export * from "./plugins/remove";
+export * from "./plugins/read";
 
 function resolveCommandKeyAndName(options: {
   commandKey?: string;

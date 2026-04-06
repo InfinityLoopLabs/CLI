@@ -1,0 +1,71 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
+import { normalizeKey } from "../../shared/normalize-key";
+
+type ReadPayload = {
+  file: TemplateValue;
+};
+
+function parseReadPayload(rawStep: CommandStepRaw, context: PluginParseContext): ReadPayload {
+  return {
+    file: assertTemplateValue(rawStep.file, "file", context),
+  };
+}
+
+function parseCliContent(content: string, filePath: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  const lines = content.split(/\r?\n/);
+  for (const [index, rawLine] of lines.entries()) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const eqIndex = line.indexOf("=");
+    if (eqIndex === -1) {
+      throw new Error(`Invalid entry in ${filePath} at line ${index + 1}: expected KEY=VALUE.`);
+    }
+
+    const key = line.slice(0, eqIndex).trim();
+    const value = line.slice(eqIndex + 1).trim();
+    if (!key) {
+      throw new Error(`Invalid entry in ${filePath} at line ${index + 1}: key is empty.`);
+    }
+
+    result[key] = value;
+  }
+
+  return result;
+}
+
+function assignVariable(target: Record<string, string | undefined>, key: string, value: string): void {
+  target[key] = value;
+  const lower = key.toLowerCase();
+  target[lower] = value;
+  const normalized = normalizeKey(key);
+  if (normalized) {
+    target[normalized] = value;
+  }
+}
+
+async function executeReadPayload(payload: ReadPayload, context: PluginExecuteContext): Promise<void> {
+  const filePath = path.resolve(context.cwd, renderTemplateValue(payload.file, context.variables));
+  const content = await readFile(filePath, "utf8");
+  const entries = parseCliContent(content, filePath);
+
+  for (const [key, value] of Object.entries(entries)) {
+    assignVariable(context.variables, key, value);
+  }
+}
+
+export const readPlugin: CommandPlugin = {
+  type: "read",
+  parse(rawStep, context) {
+    return parseReadPayload(rawStep, context);
+  },
+  async execute(payload, context) {
+    await executeReadPayload(payload as ReadPayload, context);
+  },
+};

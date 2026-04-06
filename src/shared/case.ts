@@ -19,17 +19,21 @@ export function applyCaseToValue(token: string, baseValue: string): string {
     return baseValue;
   }
 
-  if (token === token.toUpperCase()) {
+  const alphaOnly = /^[A-Za-z]+$/.test(token);
+
+  if (alphaOnly && token === token.toUpperCase()) {
     return baseValue.toUpperCase();
   }
 
-  if (token === token.toLowerCase()) {
+  if (alphaOnly && token === token.toLowerCase()) {
     return lowerFirst(baseValue);
   }
 
-  const capitalizedToken = token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
-  if (token === capitalizedToken) {
-    return upperFirst(baseValue);
+  if (alphaOnly) {
+    const capitalizedToken = token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+    if (token === capitalizedToken) {
+      return upperFirst(baseValue);
+    }
   }
 
   return baseValue;

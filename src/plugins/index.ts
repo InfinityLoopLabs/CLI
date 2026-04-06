@@ -8,6 +8,7 @@ import { replacePlugin } from "./replace";
 import { renamePlugin } from "./rename";
 import { removeLinePlugin } from "./remove-line";
 import { removePlugin } from "./remove";
+import { readPlugin } from "./read";
 
 export const builtinPlugins: CommandPlugin[] = [
   addPlugin,
@@ -19,4 +20,5 @@ export const builtinPlugins: CommandPlugin[] = [
   renamePlugin,
   removeLinePlugin,
   removePlugin,
+  readPlugin,
 ];

@@ -168,3 +168,51 @@ test("runtime respects step conditions via when", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("read plugin loads .cli variables for replacements", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-runtime-"));
+
+  try {
+    const cliFile = path.join(root, ".cli");
+    const packageFile = path.join(root, "package.json");
+    await writeFile(cliFile, "PROJECT_NAME=my-product\n", "utf8");
+    await writeFile(
+      packageFile,
+      '{\n  "name": "sample-frontend",\n  "private": true\n}\n',
+      "utf8",
+    );
+
+    const config = {
+      commands: {
+        renamePackage: [
+          {
+            type: "read",
+            file: ".cli",
+          },
+          {
+            type: "replace",
+            file: "package.json",
+            search: '"name": "sample-frontend"',
+            replace: '"name": "${PROJECT_NAME}"',
+          },
+        ],
+      },
+    };
+
+    const stepsCount = await runCommandByKey(
+      config,
+      "renamePackage",
+      root,
+      { name: "Sample" },
+      builtinPlugins,
+      "infinityloop.config.js",
+    );
+
+    assert.equal(stepsCount, 2);
+    const content = await readFile(packageFile, "utf8");
+    const parsed = JSON.parse(content);
+    assert.equal(parsed.name, "my-product");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
