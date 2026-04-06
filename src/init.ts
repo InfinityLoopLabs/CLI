@@ -15,58 +15,18 @@ type InitFileResult = {
 };
 
 const DEFAULT_TEMPLATE_REPO = "owner/template-repo";
-const DEFAULT_TARGET_REPO = "owner/target-repo";
 const DEFAULT_REF = "main";
 const CONFIG_FILE_NAME = "infinityloop.config.js";
 
-function renderConfigTemplate(templateRepo: string, targetRepo: string, ref: string): string {
+function renderConfigTemplate(templateRepo: string, ref: string): string {
   const templateRepoValue = JSON.stringify(templateRepo);
-  const targetRepoValue = JSON.stringify(targetRepo);
   const refValue = JSON.stringify(ref);
 
   return `const TEMPLATE_REPO = ${templateRepoValue};
-const TARGET_REPO = ${targetRepoValue};
 const TEMPLATE_REF = ${refValue};
 
 module.exports = {
-  meta: {
-    templateRepo: TEMPLATE_REPO,
-    targetRepo: TARGET_REPO,
-    templateRef: TEMPLATE_REF,
-  },
   commands: {
-    addWidget: [
-      {
-        type: "copy",
-        from: "_template/widget",
-        to: "app/features/widgets/$name",
-      },
-      {
-        type: "rename",
-        target: "app/features/widgets/$name",
-        replace: [{ Sample: "$name" }],
-      },
-    ],
-    addService: [
-      {
-        type: "copy",
-        from: "_template/service",
-        to: "app/features/services/$name",
-      },
-      {
-        type: "rename",
-        target: "app/features/services/$name",
-        replace: [{ Sample: "$name" }],
-      },
-    ],
-    bootstrap: [
-      {
-        type: "download",
-        repo: TEMPLATE_REPO,
-        ref: TEMPLATE_REF,
-        allowNonEmpty: true,
-      },
-    ],
     sync: [
       {
         type: "merge-template",
@@ -87,7 +47,6 @@ export async function createInitConfigFile(options: InitFileOptions): Promise<In
 
   const content = renderConfigTemplate(
     options.repo ?? DEFAULT_TEMPLATE_REPO,
-    options.targetRepo ?? DEFAULT_TARGET_REPO,
     options.ref ?? DEFAULT_REF,
   );
   await writeFile(configPath, content, "utf8");

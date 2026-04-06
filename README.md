@@ -61,6 +61,8 @@ Shortcut for feature generation:
 ```bash
 ill add widget Header
 ill add service Auth
+ill remove widget Header
+ill remove service Auth
 ```
 
 Extended form:

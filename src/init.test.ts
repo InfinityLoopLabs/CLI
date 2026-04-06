@@ -18,18 +18,18 @@ test("init creates infinityloop config file with repo and ref", async () => {
 
     assert.equal(result.configPath, path.join(root, "infinityloop.config.js"));
     const content = await readFile(result.configPath, "utf8");
-    assert.match(content, /type: "download"/);
+    assert.doesNotMatch(content, /type: "download"/);
     assert.match(content, /const TEMPLATE_REPO = "acme\/template"/);
-    assert.match(content, /const TARGET_REPO = "acme\/product"/);
+    assert.doesNotMatch(content, /const TARGET_REPO/);
     assert.match(content, /const TEMPLATE_REF = "develop"/);
     assert.match(content, /repo: TEMPLATE_REPO/);
     assert.match(content, /ref: TEMPLATE_REF/);
-    assert.match(content, /allowNonEmpty: true/);
-    assert.match(content, /addWidget: \[/);
-    assert.match(content, /addService: \[/);
-    assert.match(content, /type: "copy"/);
-    assert.match(content, /type: "rename"/);
     assert.match(content, /sync: \[/);
+    assert.doesNotMatch(content, /bootstrap/);
+    assert.doesNotMatch(content, /addWidget/);
+    assert.doesNotMatch(content, /addService/);
+    assert.doesNotMatch(content, /removeWidget/);
+    assert.doesNotMatch(content, /removeService/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -69,9 +69,10 @@ test("init overwrites existing file with --force", async () => {
     });
 
     const content = await readFile(configPath, "utf8");
-    assert.match(content, /bootstrap/);
+    assert.match(content, /sync/);
+    assert.doesNotMatch(content, /bootstrap/);
     assert.match(content, /const TEMPLATE_REPO = "owner\/repo"/);
-    assert.match(content, /const TARGET_REPO = "owner\/product"/);
+    assert.doesNotMatch(content, /const TARGET_REPO/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -26,7 +26,7 @@ function resolveCommandKeyAndName(options: {
   commandArgs?: string[];
   name?: string;
 }): { commandKey?: string; name?: string; kind?: string } {
-  if (options.commandKey !== "add") {
+  if (options.commandKey !== "add" && options.commandKey !== "remove") {
     return {
       commandKey: options.commandKey,
       name: options.name,
@@ -37,27 +37,47 @@ function resolveCommandKeyAndName(options: {
   const kind = kindRaw?.toLowerCase();
   const name = options.name ?? nameFromPositional;
 
-  if (!kind) {
-    throw new Error('Add usage: ill add <widget|service> <Name>.');
-  }
-  if (!name) {
-    throw new Error('Add usage: ill add <widget|service> <Name>.');
+  const commandLabel = options.commandKey;
+  if (!kind || !name) {
+    throw new Error(
+      commandLabel === "add"
+        ? 'Add usage: ill add <widget|service> <Name>.'
+        : 'Remove usage: ill remove <widget|service> <Name>.',
+    );
   }
 
   if (kind === "widget") {
-    return { commandKey: "addWidget", name, kind };
+    return {
+      commandKey: commandLabel === "add" ? "addWidget" : "removeWidget",
+      name,
+      kind,
+    };
   }
   if (kind === "service") {
-    return { commandKey: "addService", name, kind };
+    return {
+      commandKey: commandLabel === "add" ? "addService" : "removeService",
+      name,
+      kind,
+    };
   }
 
-  throw new Error(`Unknown add target "${kindRaw}". Allowed values: widget, service.`);
+  throw new Error(
+    `Unknown ${commandLabel} target "${kindRaw}". Allowed values: widget, service.`,
+  );
+}
+
+function toLowerFirst(value: string | undefined): string | undefined {
+  if (!value) {
+    return value;
+  }
+  return `${value.charAt(0).toLowerCase()}${value.slice(1)}`;
 }
 
 export async function runCli(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage: ill <commandKey> [--name <value>] [--config <path>] [--cwd <path>]");
     console.log("Add:   ill add <widget|service> <Name>");
+    console.log("Remove: ill remove <widget|service> <Name>");
     console.log(
       "Init:  ill init [--repo <owner/repo|url>] [--target-repo <owner/repo|url>] [--ref <branch|tag>] [--force]",
     );
@@ -84,6 +104,7 @@ export async function runCli(args: string[]): Promise<number> {
     const { config, configPath } = await loadProjectConfig(options.cwd, options.configPath);
     const variables: Variables = {
       name: resolved.name,
+      nameLower: toLowerFirst(resolved.name),
       kind: resolved.kind,
     };
 
