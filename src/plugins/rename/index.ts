@@ -4,26 +4,17 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
 import { isPlainObject } from "../../shared/is-plain-object";
+import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type ReplaceRule = {
   from: string;
-  to: string;
+  to: TemplateValue;
 };
 
 type RenamePayload = {
-  target: string;
+  target: TemplateValue;
   replace: ReplaceRule[];
 };
-
-function resolveVariables(value: string, variables: Record<string, string | undefined>): string {
-  return value.replace(/\$([A-Za-z_]\w*)/g, (_, variableName: string) => {
-    const resolved = variables[variableName];
-    if (!resolved) {
-      throw new Error(`Variable "$${variableName}" is required but was not provided.`);
-    }
-    return resolved;
-  });
-}
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -53,7 +44,7 @@ function applyReplaceRules(input: string, rules: ReplaceRule[], variables: Recor
   let output = input;
 
   for (const rule of rules) {
-    const replacement = resolveVariables(rule.to, variables);
+    const replacement = renderTemplateValue(rule.to, variables);
     const pattern = new RegExp(escapeRegExp(rule.from), "gi");
     output = output.replace(pattern, (match) => applyCaseFromMatch(match, replacement));
   }
@@ -76,18 +67,8 @@ function normalizeReplaceRules(rawRules: unknown, context: PluginParseContext): 
       );
     }
 
-    if (typeof rule.from === "string" && typeof rule.to === "string") {
-      normalized.push({ from: rule.from, to: rule.to });
-      continue;
-    }
-
     for (const [from, to] of Object.entries(rule)) {
-      if (typeof to !== "string") {
-        throw new Error(
-          `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}].replace[${ruleIndex}] values must be strings.`,
-        );
-      }
-      normalized.push({ from, to });
+      normalized.push({ from, to: assertTemplateValue(to, `replace[${ruleIndex}].${from}`, context) });
     }
   }
 
@@ -95,14 +76,8 @@ function normalizeReplaceRules(rawRules: unknown, context: PluginParseContext): 
 }
 
 function parseRenamePayload(rawStep: CommandStepRaw, context: PluginParseContext): RenamePayload {
-  if (typeof rawStep.target !== "string") {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "rename" requires string field "target".`,
-    );
-  }
-
   return {
-    target: rawStep.target,
+    target: assertTemplateValue(rawStep.target, "target", context),
     replace: normalizeReplaceRules(rawStep.replace, context),
   };
 }
@@ -144,7 +119,7 @@ async function collectPathsRecursively(root: string): Promise<string[]> {
 }
 
 async function executeRenamePayload(payload: RenamePayload, context: PluginExecuteContext): Promise<void> {
-  const targetPath = path.resolve(context.cwd, resolveVariables(payload.target, context.variables));
+  const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.target, context.variables));
   if (!existsSync(targetPath)) {
     throw new Error(`Rename target path does not exist: ${targetPath}`);
   }

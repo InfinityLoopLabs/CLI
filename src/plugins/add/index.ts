@@ -3,27 +3,18 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
 import { isPlainObject } from "../../shared/is-plain-object";
+import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type ReplaceRule = {
   from: string;
-  to: string;
+  to: TemplateValue;
 };
 
 type AddPayload = {
-  from: string;
-  to: string;
+  from: TemplateValue;
+  to: TemplateValue;
   replace: ReplaceRule[];
 };
-
-function resolveVariables(value: string, variables: Record<string, string | undefined>): string {
-  return value.replace(/\$([A-Za-z_]\w*)/g, (_, variableName: string) => {
-    const resolved = variables[variableName];
-    if (!resolved) {
-      throw new Error(`Variable "$${variableName}" is required but was not provided.`);
-    }
-    return resolved;
-  });
-}
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -53,7 +44,7 @@ function applyReplaceRules(input: string, rules: ReplaceRule[], variables: Recor
   let output = input;
 
   for (const rule of rules) {
-    const replacement = resolveVariables(rule.to, variables);
+    const replacement = renderTemplateValue(rule.to, variables);
     const pattern = new RegExp(escapeRegExp(rule.from), "gi");
     output = output.replace(pattern, (match) => applyCaseFromMatch(match, replacement));
   }
@@ -79,18 +70,11 @@ function normalizeReplaceRules(rawRules: unknown, context: PluginParseContext): 
       );
     }
 
-    if (typeof rule.from === "string" && typeof rule.to === "string") {
-      normalized.push({ from: rule.from, to: rule.to });
-      continue;
-    }
-
     for (const [from, to] of Object.entries(rule)) {
-      if (typeof to !== "string") {
-        throw new Error(
-          `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}].replace[${ruleIndex}] values must be strings.`,
-        );
-      }
-      normalized.push({ from, to });
+      normalized.push({
+        from,
+        to: assertTemplateValue(to, `replace[${ruleIndex}].${from}`, context),
+      });
     }
   }
 
@@ -98,15 +82,9 @@ function normalizeReplaceRules(rawRules: unknown, context: PluginParseContext): 
 }
 
 function parseAddPayload(rawStep: CommandStepRaw, context: PluginParseContext): AddPayload {
-  if (typeof rawStep.from !== "string" || typeof rawStep.to !== "string") {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "add" requires string fields "from" and "to".`,
-    );
-  }
-
   return {
-    from: rawStep.from,
-    to: rawStep.to,
+    from: assertTemplateValue(rawStep.from, "from", context),
+    to: assertTemplateValue(rawStep.to, "to", context),
     replace: normalizeReplaceRules(rawStep.replace, context),
   };
 }
@@ -163,8 +141,8 @@ async function copyDirWithTransforms(
 }
 
 async function executeAddPayload(payload: AddPayload, context: PluginExecuteContext): Promise<void> {
-  const sourcePath = path.resolve(context.cwd, resolveVariables(payload.from, context.variables));
-  const targetPath = path.resolve(context.cwd, resolveVariables(payload.to, context.variables));
+  const sourcePath = path.resolve(context.cwd, renderTemplateValue(payload.from, context.variables));
+  const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.to, context.variables));
   if (!existsSync(sourcePath)) {
     throw new Error(`Add source path does not exist: ${sourcePath}`);
   }

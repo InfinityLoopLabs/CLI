@@ -10,10 +10,12 @@ export type CliOptions = {
   targetRepo?: string;
   ref?: string;
   force?: boolean;
+  params?: Record<string, string>;
 };
 
 export type CommandStepRaw = {
   type: string;
+  when?: string | string[];
   [key: string]: unknown;
 };
 

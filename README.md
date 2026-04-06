@@ -124,6 +124,42 @@ module.exports = {
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
 - `merge-template`: starts merge from template and mirrors full template snapshot on success. If merge is already in progress, CLI stops and asks you to resolve it first.
 - `insert`: insert `line` after `placeholder` in `file`.
+- `replace`: replace the first occurrence of `search` with `replace` in `file`.
 - `rename`: replace tokens in file contents and file/directory names inside `target` with case preservation (`Sample` / `sample` / `SAMPLE`).
 - `remove-line`: remove a line from `file` by text match.
 - `remove`: delete file/folder at `target`.
+
+### Template values & variables
+
+- Fields such as `file`, `placeholder`, `line`, `search`, and `replace` accept either a string with `$variable` / `${variable}` placeholders or a function `(variables) => string`.
+- Available variables:
+  - `name`, `namePascal`, `nameCamel`, `nameLower`, `nameSnake`, `nameKebab`, `nameScreamingSnake`
+  - `kind` (`widget` / `service` when using `ill add|remove`).
+- Any extra CLI flag becomes a variable: `--store-name=SideMenu` exposes `${storeName}`, `--dry-run` sets `${dryRun}` to `"true"`, and disabling flags like `--no-store` / `--nostore` set `${store}` to `"false"` while `${noStore}` becomes `"true"`. Flag names are normalized to camelCase by stripping dashes/underscores, but you can still reference hyphenated names in `when` expressions (e.g. `when: "!no-store"`).
+- For `${variable}` syntax, the placeholder casing controls the transform: `${name}` lowers the first letter, `${Name}` capitalizes it, `${NAME}` uppercases the whole string. Plain `$variable` keeps the stored value.
+- Example:
+
+```js
+{
+  type: "insert",
+  file: "app/features/services/$name/hooks.ts",
+  placeholder: "// Services: Start",
+  line: "  $nameLower: createAction(${name}Actions),",
+}
+```
+
+### Conditional execution
+
+- Every step may declare `when`, either as a string (`"store"`, `"!store"`) or an array of such strings. All conditions must be truthy for the step to run.
+- Truthiness is based on the variable value: missing/`"false"`/`"0"`/empty strings are treated as `false`, everything else is `true`. Prefix `!` to invert the result.
+- Example: skip store-related insertions when `--no-store` is provided.
+
+```js
+{
+  type: "insert",
+  when: "!no-store", // executes only when --no-store/--nostore is not provided
+  file: "app/store/index.ts",
+  placeholder: "// Services: Start",
+  line: "  ${name}: ${Name}Reducer,",
+}
+```

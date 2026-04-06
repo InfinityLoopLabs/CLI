@@ -17,6 +17,7 @@ export * from "./plugins/copy";
 export * from "./plugins/download";
 export * from "./plugins/insert";
 export * from "./plugins/merge-template";
+export * from "./plugins/replace";
 export * from "./plugins/rename";
 export * from "./plugins/remove-line";
 export * from "./plugins/remove";
@@ -73,6 +74,75 @@ function toLowerFirst(value: string | undefined): string | undefined {
   return `${value.charAt(0).toLowerCase()}${value.slice(1)}`;
 }
 
+function tokenizeName(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[-_\s]+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean)
+    .map(part => part.toLowerCase());
+}
+
+function capitalize(part: string): string {
+  return part.charAt(0).toUpperCase() + part.slice(1);
+}
+
+function toPascalCase(value: string | undefined): string | undefined {
+  const tokens = tokenizeName(value);
+  if (tokens.length === 0) {
+    return value;
+  }
+  return tokens.map(capitalize).join("");
+}
+
+function toCamelCase(value: string | undefined): string | undefined {
+  const tokens = tokenizeName(value);
+  if (tokens.length === 0) {
+    return value;
+  }
+  const [first, ...rest] = tokens;
+  return [first, ...rest.map(capitalize)].join("");
+}
+
+function toSnakeCase(value: string | undefined): string | undefined {
+  const tokens = tokenizeName(value);
+  if (tokens.length === 0) {
+    return value;
+  }
+  return tokens.join("_");
+}
+
+function toKebabCase(value: string | undefined): string | undefined {
+  const tokens = tokenizeName(value);
+  if (tokens.length === 0) {
+    return value;
+  }
+  return tokens.join("-");
+}
+
+function toScreamingSnakeCase(value: string | undefined): string | undefined {
+  const snake = toSnakeCase(value);
+  return snake ? snake.toUpperCase() : value;
+}
+
+function createNameVariants(name: string | undefined): Variables {
+  const pascal = toPascalCase(name);
+  return {
+    name,
+    nameLower: toLowerFirst(name),
+    namePascal: pascal,
+    nameCamel: toCamelCase(name),
+    nameSnake: toSnakeCase(name),
+    nameKebab: toKebabCase(name),
+    nameScreamingSnake: toScreamingSnakeCase(name),
+  };
+}
+
 export async function runCli(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage: ill <commandKey> [--name <value>] [--config <path>] [--cwd <path>]");
@@ -103,9 +173,9 @@ export async function runCli(args: string[]): Promise<number> {
     const resolved = resolveCommandKeyAndName(options);
     const { config, configPath } = await loadProjectConfig(options.cwd, options.configPath);
     const variables: Variables = {
-      name: resolved.name,
-      nameLower: toLowerFirst(resolved.name),
+      ...createNameVariants(resolved.name),
       kind: resolved.kind,
+      ...(options.params ?? {}),
     };
 
     const stepsCount = await runCommandByKey(

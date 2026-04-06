@@ -2,32 +2,17 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type CopyPayload = {
-  from: string;
-  to: string;
+  from: TemplateValue;
+  to: TemplateValue;
 };
 
-function resolveVariables(value: string, variables: Record<string, string | undefined>): string {
-  return value.replace(/\$([A-Za-z_]\w*)/g, (_, variableName: string) => {
-    const resolved = variables[variableName];
-    if (!resolved) {
-      throw new Error(`Variable "$${variableName}" is required but was not provided.`);
-    }
-    return resolved;
-  });
-}
-
 function parseCopyPayload(rawStep: CommandStepRaw, context: PluginParseContext): CopyPayload {
-  if (typeof rawStep.from !== "string" || typeof rawStep.to !== "string") {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "copy" requires string fields "from" and "to".`,
-    );
-  }
-
   return {
-    from: rawStep.from,
-    to: rawStep.to,
+    from: assertTemplateValue(rawStep.from, "from", context),
+    to: assertTemplateValue(rawStep.to, "to", context),
   };
 }
 
@@ -57,8 +42,8 @@ async function copyDir(sourceDir: string, targetDir: string): Promise<void> {
 }
 
 async function executeCopyPayload(payload: CopyPayload, context: PluginExecuteContext): Promise<void> {
-  const sourcePath = path.resolve(context.cwd, resolveVariables(payload.from, context.variables));
-  const targetPath = path.resolve(context.cwd, resolveVariables(payload.to, context.variables));
+  const sourcePath = path.resolve(context.cwd, renderTemplateValue(payload.from, context.variables));
+  const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.to, context.variables));
   if (!existsSync(sourcePath)) {
     throw new Error(`Copy source path does not exist: ${sourcePath}`);
   }

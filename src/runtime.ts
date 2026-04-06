@@ -1,6 +1,56 @@
 import type { CommandPlugin, CommandStepRaw, ProjectConfig, Variables } from "./types";
+import { normalizeKey } from "./shared/normalize-key";
 
 type PluginRegistry = Map<string, CommandPlugin>;
+
+function resolveVariableValue(key: string, variables: Variables): string | undefined {
+  if (variables[key] !== undefined) {
+    return variables[key];
+  }
+
+  const normalized = normalizeKey(key);
+  if (normalized && variables[normalized] !== undefined) {
+    return variables[normalized];
+  }
+
+  const lowered = key.toLowerCase();
+  if (variables[lowered] !== undefined) {
+    return variables[lowered];
+  }
+
+  const camel = key.charAt(0).toLowerCase() + key.slice(1);
+  if (variables[camel] !== undefined) {
+    return variables[camel];
+  }
+
+  return undefined;
+}
+
+function evaluateCondition(condition: string, variables: Variables): boolean {
+  const trimmed = condition.trim();
+  if (!trimmed) {
+    return true;
+  }
+
+  const negate = trimmed.startsWith("!");
+  const key = negate ? trimmed.slice(1).trim() : trimmed;
+  if (!key) {
+    return true;
+  }
+
+  const value = resolveVariableValue(key, variables);
+  const truthy = value !== undefined && value !== "" && value !== "false" && value !== "0";
+  return negate ? !truthy : truthy;
+}
+
+function shouldExecuteStep(step: CommandStepRaw, variables: Variables): boolean {
+  if (!step.when) {
+    return true;
+  }
+
+  const conditions = Array.isArray(step.when) ? step.when : [step.when];
+  return conditions.every(condition => evaluateCondition(condition, variables));
+}
 
 export function createPluginRegistry(plugins: CommandPlugin[]): PluginRegistry {
   const registry: PluginRegistry = new Map();
@@ -45,7 +95,11 @@ export async function runCommandByKey(
   }
 
   const registry = createPluginRegistry(plugins);
+  let executedSteps = 0;
   for (const [stepIndex, step] of steps.entries()) {
+    if (!shouldExecuteStep(step as CommandStepRaw, variables)) {
+      continue;
+    }
     const plugin = getPluginOrThrow(
       registry,
       step.type,
@@ -57,7 +111,8 @@ export async function runCommandByKey(
       stepIndex,
     });
     await plugin.execute(payload, { cwd, variables });
+    executedSteps += 1;
   }
 
-  return steps.length;
+  return executedSteps;
 }

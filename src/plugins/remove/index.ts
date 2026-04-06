@@ -1,35 +1,20 @@
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type RemovePayload = {
-  target: string;
+  target: TemplateValue;
 };
 
-function resolveVariables(value: string, variables: Record<string, string | undefined>): string {
-  return value.replace(/\$([A-Za-z_]\w*)/g, (_, variableName: string) => {
-    const resolved = variables[variableName];
-    if (!resolved) {
-      throw new Error(`Variable "$${variableName}" is required but was not provided.`);
-    }
-    return resolved;
-  });
-}
-
 function parseRemovePayload(rawStep: CommandStepRaw, context: PluginParseContext): RemovePayload {
-  if (typeof rawStep.target !== "string") {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "remove" requires string field "target".`,
-    );
-  }
-
   return {
-    target: rawStep.target,
+    target: assertTemplateValue(rawStep.target, "target", context),
   };
 }
 
 async function executeRemovePayload(payload: RemovePayload, context: PluginExecuteContext): Promise<void> {
-  const targetPath = path.resolve(context.cwd, resolveVariables(payload.target, context.variables));
+  const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.target, context.variables));
   await rm(targetPath, { recursive: true, force: true });
 }
 
