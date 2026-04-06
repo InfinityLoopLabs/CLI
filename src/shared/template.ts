@@ -10,8 +10,20 @@ export function assertTemplateValue(
   field: string,
   context: PluginParseContext,
 ): TemplateValue {
-  if (typeof value === "string" || typeof value === "function") {
+  if (typeof value === "string") {
     return value;
+  }
+
+  if (typeof value === "function") {
+    return (variables: Variables) => {
+      const result = value(variables);
+      if (typeof result !== "string") {
+        throw new Error(
+          `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] field "${field}" function must return a string.`,
+        );
+      }
+      return result;
+    };
   }
 
   throw new Error(
@@ -48,9 +60,6 @@ export function parseTemplateObjectArray(
 
 export function renderTemplateValue(value: TemplateValue, variables: Variables): string {
   const raw = typeof value === "function" ? value(variables) : value;
-  if (typeof raw !== "string") {
-    throw new Error("Template function must return a string value.");
-  }
 
   return raw.replace(TEMPLATE_REGEX, (match: string, openBrace: string | undefined, token: string, closeBrace: string | undefined) => {
     const hasBraces = Boolean(openBrace || closeBrace);
