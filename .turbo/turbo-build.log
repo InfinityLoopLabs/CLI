@@ -1,0 +1,12 @@
+
+
+> @infinityloop.labs/ai-cli@0.4.0 build
+> npm run clean && rollup -c && tsc -p tsconfig.json --emitDeclarationOnly --declaration --declarationMap --outDir dist --sourceMap false && chmod +x dist/cli.js
+
+
+> @infinityloop.labs/ai-cli@0.4.0 clean
+> rm -rf dist
+
+⠙[1G[0K[36m
+[1msrc/index.ts, src/cli.ts[22m → [1mdist[22m...[39m
+[32mcreated [1mdist[22m in [1m997ms[22m[39m
