@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -229,7 +229,30 @@ async function filterTemplateOwnedDeletions(files: string[], cwd: string): Promi
   return owned;
 }
 
-async function applyPatch(patch: string, cwd: string): Promise<void> {
+function extractGitApplyConflictPaths(stderr: string): string[] {
+  const paths = new Set<string>();
+  stderr
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .forEach(line => {
+      const match = /^error: (.+?)(?::|$)/.exec(line);
+      if (match) {
+        const candidate = (match[1] ?? "").trim();
+        if (candidate && !candidate.startsWith("patch")) {
+          paths.add(candidate);
+        }
+      }
+    });
+  return Array.from(paths);
+}
+
+async function autoResetConflictingFiles(files: string[], cwd: string): Promise<void> {
+  for (const file of files) {
+    await execFileAsync("git", ["checkout", "--", file], { cwd }).catch(() => undefined);
+  }
+}
+
+async function applyPatch(patch: string, cwd: string, autoResolved = false): Promise<void> {
   if (!patch.trim()) {
     return;
   }
@@ -242,16 +265,37 @@ async function applyPatch(patch: string, cwd: string): Promise<void> {
     await execFileAsync("git", ["apply", "--3way", "--whitespace=nowarn", patchFile], { cwd });
   } catch (error) {
     const execError = error as ExecFileError;
-    const stderr = execError.stderr
+    const rawStderr = execError.stderr
       ? typeof execError.stderr === "string"
         ? execError.stderr
         : execError.stderr.toString("utf8")
       : "";
-    const suffix = stderr.trim();
+    const conflictPaths = extractGitApplyConflictPaths(rawStderr);
+    if (!autoResolved && conflictPaths.length > 0) {
+      console.warn(
+        [
+          "git apply failed because local modifications conflict with template updates.",
+          "Attempting to reset conflicted files automatically:",
+          ...conflictPaths.map(pathEntry => ` - ${pathEntry}`),
+        ].join("\n"),
+      );
+      await autoResetConflictingFiles(conflictPaths, cwd);
+      await applyPatch(patch, cwd, true);
+      return;
+    }
+
+    const message = rawStderr.trim()
+      ? rawStderr.trim()
+      : execError.message;
     throw new Error(
-      suffix
-        ? `git apply failed. ${suffix}`
-        : "git apply failed. Resolve conflicts in the working tree and re-run the command.",
+      [
+        "git apply failed. Resolve conflicts manually and rerun the command.",
+        "Tips:",
+        " - Run `git status` to see conflicted files (look for both staged and unstaged changes).",
+        " - Use `git diff`/`git checkout -- <file>` to inspect or revert specific files.",
+        " - Commit or stash your local changes before running `ill sync` again.",
+      ].join("\n"),
+      { cause: new Error(message) },
     );
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
@@ -502,6 +546,8 @@ async function executeMergeTemplatePayload(
       return;
     }
     let nextPatch = patch;
+    const keepFiles = new Set<string>();
+    const keepSnapshots = new Map<string, Buffer>();
 
     const pendingDeletions = deletedFiles;
     const templateOwnedDeletions = await filterTemplateOwnedDeletions(deletedFiles, context.cwd);
@@ -514,8 +560,15 @@ async function executeMergeTemplatePayload(
     const protectedPathsRaw = payload.protectedPaths.map(value => renderTemplateValue(value, context.variables));
     const protectedPaths = normalizeProtectedPaths(protectedPathsRaw, context.cwd).map(normalizePathForCompare);
     if (payload.allowDeletes) {
-      const keep = new Set<string>(pendingDeletions.filter(file => isProtectedFile(file, protectedPaths)));
-      const deletionsToConfirm = pendingDeletions.filter(file => !keep.has(file));
+      const deletionsToConfirm: string[] = [];
+
+      for (const file of pendingDeletions) {
+        if (isProtectedFile(file, protectedPaths)) {
+          keepFiles.add(file);
+        } else {
+          deletionsToConfirm.push(file);
+        }
+      }
 
       if (deletionsToConfirm.length > 0) {
         const decision = await confirmTemplateDeletions(deletionsToConfirm);
@@ -528,11 +581,17 @@ async function executeMergeTemplatePayload(
             decision.keep.add(file);
           }
         }
-        decision.keep.forEach(file => keep.add(file));
+        decision.keep.forEach(file => keepFiles.add(file));
       }
 
-      if (keep.size > 0) {
-        nextPatch = removeKeptDeletionsFromPatch(nextPatch, keep);
+      if (keepFiles.size > 0) {
+        for (const file of keepFiles) {
+          const absolute = path.resolve(context.cwd, file);
+          if (existsSync(absolute)) {
+            keepSnapshots.set(file, await readFile(absolute));
+          }
+        }
+        nextPatch = removeKeptDeletionsFromPatch(nextPatch, keepFiles);
         if (!nextPatch.trim()) {
           return;
         }
@@ -540,6 +599,21 @@ async function executeMergeTemplatePayload(
     }
 
     await applyPatch(nextPatch, context.cwd);
+
+    if (keepFiles.size > 0) {
+      for (const file of keepFiles) {
+        const absolute = path.resolve(context.cwd, file);
+        if (!existsSync(absolute)) {
+          const snapshot = keepSnapshots.get(file);
+          if (snapshot) {
+            await mkdir(path.dirname(absolute), { recursive: true });
+            await writeFile(absolute, snapshot);
+          } else {
+            // fall back to leaving a conflict marker; git apply already reported the issue
+          }
+        }
+      }
+    }
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }

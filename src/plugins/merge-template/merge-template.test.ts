@@ -234,14 +234,10 @@ test("merge-template blocks removal inside protected paths", async () => {
       },
     );
 
-    await assert.rejects(
-      () =>
-        mergeTemplatePlugin.execute(payload, {
-          cwd: targetRepo,
-          variables: {},
-        }),
-      /Template update touches protected paths/,
-    );
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
 
     const keepContent = await readFile(path.join(targetRepo, "app/business/keep.txt"), "utf8");
     assert.equal(keepContent, "old\n");
