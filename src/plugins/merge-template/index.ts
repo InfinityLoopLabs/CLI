@@ -514,25 +514,25 @@ async function executeMergeTemplatePayload(
     const protectedPathsRaw = payload.protectedPaths.map(value => renderTemplateValue(value, context.variables));
     const protectedPaths = normalizeProtectedPaths(protectedPathsRaw, context.cwd).map(normalizePathForCompare);
     if (payload.allowDeletes) {
-      const protectedDeletions = pendingDeletions.filter(file => isProtectedFile(file, protectedPaths));
-      if (protectedDeletions.length > 0) {
-        throw new Error(
-          `Template update touches protected paths:\n${formatFileList(protectedDeletions)}\nReview the template change or adjust "protectedPaths".`,
-        );
-      }
+      const keep = new Set<string>(pendingDeletions.filter(file => isProtectedFile(file, protectedPaths)));
+      const deletionsToConfirm = pendingDeletions.filter(file => !keep.has(file));
 
-      if (pendingDeletions.length > 0) {
-        const decision = await confirmTemplateDeletions(pendingDeletions);
+      if (deletionsToConfirm.length > 0) {
+        const decision = await confirmTemplateDeletions(deletionsToConfirm);
         if (!decision.proceed) {
           throw new Error("Template merge cancelled by user (deletions skipped).");
         }
-        for (const file of pendingDeletions) {
+        for (const file of deletionsToConfirm) {
           const absolute = path.resolve(context.cwd, file);
           if (!existsSync(absolute)) {
             decision.keep.add(file);
           }
         }
-        nextPatch = removeKeptDeletionsFromPatch(nextPatch, decision.keep);
+        decision.keep.forEach(file => keep.add(file));
+      }
+
+      if (keep.size > 0) {
+        nextPatch = removeKeptDeletionsFromPatch(nextPatch, keep);
         if (!nextPatch.trim()) {
           return;
         }
