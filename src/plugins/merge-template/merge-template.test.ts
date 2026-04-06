@@ -245,3 +245,148 @@ test("merge-template blocks removal inside protected paths", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("merge-template ignores all add/delete/modify changes inside protected paths", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-protected-tree-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(path.join(templateRepo, "app/features/widgets/Headless"), { recursive: true });
+    await writeFile(path.join(templateRepo, "core.txt"), "core-v1\n", "utf8");
+    await writeFile(path.join(templateRepo, "app/features/widgets/Headless/index.tsx"), "template-v1\n", "utf8");
+    await writeFile(path.join(templateRepo, "app/features/widgets/Headless/keep.ts"), "keep-v1\n", "utf8");
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+
+    await writeFile(path.join(templateRepo, "core.txt"), "core-v2\n", "utf8");
+    await writeFile(path.join(templateRepo, "app/features/widgets/Headless/index.tsx"), "template-v2\n", "utf8");
+    await runGit(["rm", "app/features/widgets/Headless/keep.ts"], templateRepo);
+    await writeFile(path.join(templateRepo, "app/features/widgets/Headless/new.ts"), "new-file\n", "utf8");
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v2"], templateRepo);
+
+    await mkdir(path.join(targetRepo, "app/features/widgets/Headless"), { recursive: true });
+    await writeFile(path.join(targetRepo, "core.txt"), "core-v1\n", "utf8");
+    await writeFile(path.join(targetRepo, "app/features/widgets/Headless/index.tsx"), "target-local\n", "utf8");
+    await writeFile(path.join(targetRepo, "app/features/widgets/Headless/keep.ts"), "target-keep\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target v1"], targetRepo);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        allowDeletes: true,
+        protectedPaths: ["app/features"],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    assert.equal(await readFile(path.join(targetRepo, "core.txt"), "utf8"), "core-v2\n");
+    assert.equal(
+      await readFile(path.join(targetRepo, "app/features/widgets/Headless/index.tsx"), "utf8"),
+      "target-local\n",
+    );
+    assert.equal(
+      await readFile(path.join(targetRepo, "app/features/widgets/Headless/keep.ts"), "utf8"),
+      "target-keep\n",
+    );
+    await assert.rejects(readFile(path.join(targetRepo, "app/features/widgets/Headless/new.ts"), "utf8"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merge-template preserves local package json changes while applying template updates", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-package-json-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(templateRepo, { recursive: true });
+    await writeFile(
+      path.join(templateRepo, "package.json"),
+      '{\n  "name": "sample-frontend",\n  "version": "1.0.0"\n}\n',
+      "utf8",
+    );
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+
+    await writeFile(
+      path.join(templateRepo, "package.json"),
+      '{\n  "name": "sample-frontend",\n  "version": "2.0.0"\n}\n',
+      "utf8",
+    );
+    await runGit(["add", "package.json"], templateRepo);
+    await runGit(["commit", "-m", "template v2"], templateRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(
+      path.join(targetRepo, "package.json"),
+      '{\n  "name": "sample-frontend",\n  "version": "1.0.0"\n}\n',
+      "utf8",
+    );
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target v1"], targetRepo);
+
+    await writeFile(
+      path.join(targetRepo, "package.json"),
+      '{\n  "name": "react-polygon",\n  "version": "1.0.0"\n}\n',
+      "utf8",
+    );
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        allowDeletes: true,
+        protectedPaths: [],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    assert.equal(
+      await readFile(path.join(targetRepo, "package.json"), "utf8"),
+      '{\n  "name": "react-polygon",\n  "version": "2.0.0"\n}\n',
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

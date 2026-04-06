@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
 import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
@@ -147,12 +146,20 @@ async function ensureNoMergeInProgress(cwd: string): Promise<void> {
   }
 }
 
-function buildDiffArgs(payload: MergeTemplatePayload): string[] {
+function buildPathspecArgs(protectedPaths: string[]): string[] {
+  if (protectedPaths.length === 0) {
+    return [];
+  }
+
+  return ["--", ".", ...protectedPaths.map(entry => `:(exclude)${normalizePathForCompare(entry)}`)];
+}
+
+function buildDiffArgs(payload: MergeTemplatePayload, protectedPaths: string[]): string[] {
   const diffArgs = ["diff", "--binary", "HEAD", "FETCH_HEAD"];
   if (!payload.allowDeletes) {
     diffArgs.splice(1, 0, "--diff-filter=AMRTUXB");
   }
-  return diffArgs;
+  return [...diffArgs, ...buildPathspecArgs(protectedPaths)];
 }
 
 function normalizeProtectedPaths(paths: string[], cwd: string): string[] {
@@ -201,8 +208,11 @@ function formatFileList(files: string[]): string {
   return files.map(file => ` - ${file}`).join("\n");
 }
 
-async function collectTemplateDeletions(cwd: string): Promise<string[]> {
-  const { stdout } = await runGit(["diff", "--name-only", "--diff-filter=D", "HEAD", "FETCH_HEAD"], cwd);
+async function collectTemplateDeletions(cwd: string, protectedPaths: string[]): Promise<string[]> {
+  const { stdout } = await runGit(
+    ["diff", "--name-only", "--diff-filter=D", "HEAD", "FETCH_HEAD", ...buildPathspecArgs(protectedPaths)],
+    cwd,
+  );
   return stdout
     .split("\n")
     .map(entry => entry.trim())
@@ -246,10 +256,214 @@ function extractGitApplyConflictPaths(stderr: string): string[] {
   return Array.from(paths);
 }
 
-async function autoResetConflictingFiles(files: string[], cwd: string): Promise<void> {
+async function resetConflictingFilesToHead(files: string[], cwd: string): Promise<void> {
   for (const file of files) {
     await execFileAsync("git", ["checkout", "--", file], { cwd }).catch(() => undefined);
   }
+}
+
+type WorkingTreeSnapshot = {
+  exists: boolean;
+  content?: string;
+};
+
+const JSON_MISSING = Symbol("json-missing");
+
+async function readWorkingTreeSnapshot(filePath: string, cwd: string): Promise<WorkingTreeSnapshot> {
+  const absolutePath = path.resolve(cwd, filePath);
+  try {
+    return {
+      exists: true,
+      content: await readFile(absolutePath, "utf8"),
+    };
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") {
+      return { exists: false };
+    }
+    throw error;
+  }
+}
+
+async function captureWorkingTreeSnapshots(files: string[], cwd: string): Promise<Map<string, WorkingTreeSnapshot>> {
+  const snapshots = new Map<string, WorkingTreeSnapshot>();
+  for (const file of files) {
+    snapshots.set(file, await readWorkingTreeSnapshot(file, cwd));
+  }
+  return snapshots;
+}
+
+async function readGitRevisionFile(ref: string, filePath: string, cwd: string): Promise<string | undefined> {
+  const normalizedPath = normalizePathForCompare(filePath);
+  try {
+    const { stdout } = await execFileAsync("git", ["show", `${ref}:${normalizedPath}`], {
+      cwd,
+      encoding: "utf8",
+    });
+    return stdout;
+  } catch (error) {
+    const execError = error as ExecFileError;
+    if (execError.code === 128) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function isPlainJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function mergeJsonValues(
+  base: unknown,
+  current: unknown,
+  local: unknown,
+): unknown {
+  if (isDeepStrictEqual(current, local)) {
+    return current;
+  }
+
+  if (isDeepStrictEqual(current, base)) {
+    return local === JSON_MISSING ? undefined : local;
+  }
+
+  if (isDeepStrictEqual(local, base)) {
+    return current === JSON_MISSING ? undefined : current;
+  }
+
+  if (isPlainJsonObject(base) || isPlainJsonObject(current) || isPlainJsonObject(local)) {
+    const baseRecord = isPlainJsonObject(base) ? base : {};
+    const currentRecord = isPlainJsonObject(current) ? current : {};
+    const localRecord = isPlainJsonObject(local) ? local : {};
+    const merged: Record<string, unknown> = {};
+    const keys = new Set([
+      ...Object.keys(baseRecord),
+      ...Object.keys(currentRecord),
+      ...Object.keys(localRecord),
+    ]);
+
+    for (const key of keys) {
+      const nextValue = mergeJsonValues(
+        key in baseRecord ? baseRecord[key] : JSON_MISSING,
+        key in currentRecord ? currentRecord[key] : JSON_MISSING,
+        key in localRecord ? localRecord[key] : JSON_MISSING,
+      );
+
+      if (nextValue !== undefined && nextValue !== JSON_MISSING) {
+        merged[key] = nextValue;
+      }
+    }
+
+    return merged;
+  }
+
+  return local === JSON_MISSING ? undefined : local;
+}
+
+function tryMergeJsonVersions(params: {
+  filePath: string;
+  current: string | undefined;
+  base: string | undefined;
+  local: string | undefined;
+}): string | undefined {
+  if (!params.filePath.endsWith(".json")) {
+    return undefined;
+  }
+
+  try {
+    const current = params.current === undefined ? JSON_MISSING : JSON.parse(params.current);
+    const base = params.base === undefined ? JSON_MISSING : JSON.parse(params.base);
+    const local = params.local === undefined ? JSON_MISSING : JSON.parse(params.local);
+    const merged = mergeJsonValues(base, current, local);
+
+    if (merged === undefined || merged === JSON_MISSING) {
+      return "";
+    }
+
+    return `${JSON.stringify(merged, null, 2)}\n`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function mergeFileVersions(params: {
+  filePath: string;
+  cwd: string;
+  current: string | undefined;
+  base: string | undefined;
+  local: string | undefined;
+}): Promise<string> {
+  const jsonMerged = tryMergeJsonVersions(params);
+  if (jsonMerged !== undefined) {
+    return jsonMerged;
+  }
+
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "ill-conflict-"));
+  const currentPath = path.join(tempDir, "current");
+  const basePath = path.join(tempDir, "base");
+  const localPath = path.join(tempDir, "local");
+
+  try {
+    await writeFile(currentPath, params.current ?? "", "utf8");
+    await writeFile(basePath, params.base ?? "", "utf8");
+    await writeFile(localPath, params.local ?? "", "utf8");
+
+    try {
+      await execFileAsync("git", ["merge-file", currentPath, basePath, localPath], { cwd: params.cwd });
+    } catch (error) {
+      const execError = error as ExecFileError;
+      if (execError.code !== 1) {
+        throw error;
+      }
+    }
+
+    return await readFile(currentPath, "utf8");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function restoreConflictingFiles(params: {
+  files: string[];
+  cwd: string;
+  snapshots: Map<string, WorkingTreeSnapshot>;
+}): Promise<void> {
+  for (const file of params.files) {
+    const snapshot = params.snapshots.get(file);
+    if (!snapshot) {
+      continue;
+    }
+
+    const current = await readWorkingTreeSnapshot(file, params.cwd);
+    const base = await readGitRevisionFile("HEAD", file, params.cwd);
+    const merged = await mergeFileVersions({
+      filePath: file,
+      cwd: params.cwd,
+      current: current.exists ? current.content : undefined,
+      base,
+      local: snapshot.exists ? snapshot.content : undefined,
+    });
+
+    const absolutePath = path.resolve(params.cwd, file);
+    if (merged.length === 0 && !current.exists && !snapshot.exists) {
+      await unlink(absolutePath).catch(() => undefined);
+      continue;
+    }
+
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, merged, "utf8");
+  }
+}
+
+function getExecErrorMessage(error: unknown): string {
+  const execError = error as ExecFileError;
+  const rawStderr = execError.stderr
+    ? typeof execError.stderr === "string"
+      ? execError.stderr
+      : execError.stderr.toString("utf8")
+    : "";
+
+  return rawStderr.trim() ? rawStderr.trim() : execError.message;
 }
 
 async function applyPatch(patch: string, cwd: string, autoResolved = false): Promise<void> {
@@ -262,31 +476,22 @@ async function applyPatch(patch: string, cwd: string, autoResolved = false): Pro
   await writeFile(patchFile, patch, "utf8");
 
   try {
-    await execFileAsync("git", ["apply", "--3way", "--whitespace=nowarn", patchFile], { cwd });
+    await execFileAsync("git", ["apply", "--check", "--3way", "--whitespace=nowarn", patchFile], { cwd });
   } catch (error) {
-    const execError = error as ExecFileError;
-    const rawStderr = execError.stderr
-      ? typeof execError.stderr === "string"
-        ? execError.stderr
-        : execError.stderr.toString("utf8")
-      : "";
+    const rawStderr = getExecErrorMessage(error);
     const conflictPaths = extractGitApplyConflictPaths(rawStderr);
     if (!autoResolved && conflictPaths.length > 0) {
-      console.warn(
-        [
-          "git apply failed because local modifications conflict with template updates.",
-          "Attempting to reset conflicted files automatically:",
-          ...conflictPaths.map(pathEntry => ` - ${pathEntry}`),
-        ].join("\n"),
-      );
-      await autoResetConflictingFiles(conflictPaths, cwd);
+      const localSnapshots = await captureWorkingTreeSnapshots(conflictPaths, cwd);
+      await resetConflictingFilesToHead(conflictPaths, cwd);
       await applyPatch(patch, cwd, true);
+      await restoreConflictingFiles({
+        files: conflictPaths,
+        cwd,
+        snapshots: localSnapshots,
+      });
       return;
     }
 
-    const message = rawStderr.trim()
-      ? rawStderr.trim()
-      : execError.message;
     throw new Error(
       [
         "git apply failed. Resolve conflicts manually and rerun the command.",
@@ -295,8 +500,14 @@ async function applyPatch(patch: string, cwd: string, autoResolved = false): Pro
         " - Use `git diff`/`git checkout -- <file>` to inspect or revert specific files.",
         " - Commit or stash your local changes before running `ill sync` again.",
       ].join("\n"),
-      { cause: new Error(message) },
+      { cause: new Error(rawStderr) },
     );
+  }
+
+  try {
+    await execFileAsync("git", ["apply", "--3way", "--whitespace=nowarn", patchFile], { cwd });
+  } catch (error) {
+    throw new Error("git apply failed after pre-check passed.", { cause: new Error(getExecErrorMessage(error)) });
   } finally {
     await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
   }
@@ -307,14 +518,14 @@ type PatchCheckResult = {
   deletedFiles: string[];
 };
 
-async function previewPatch(payload: MergeTemplatePayload, cwd: string): Promise<PatchCheckResult> {
-  const diffArgs = buildDiffArgs(payload);
+async function previewPatch(payload: MergeTemplatePayload, cwd: string, protectedPaths: string[]): Promise<PatchCheckResult> {
+  const diffArgs = buildDiffArgs(payload, protectedPaths);
   const { stdout: patch } = await runGit(diffArgs, cwd);
   if (!patch.trim()) {
     return { deletedFiles: [] };
   }
 
-  const deletedFiles = await collectTemplateDeletions(cwd);
+  const deletedFiles = await collectTemplateDeletions(cwd, protectedPaths);
   return { patch, deletedFiles };
 }
 
@@ -504,7 +715,7 @@ function removeKeptDeletionsFromPatch(patch: string, keep: Set<string>): string 
     return patch;
   }
 
-  const diffRegex = /^diff --git a\/(.+?) b\/.*\n[\s\S]*?(?=^diff --git |\u0000|\Z)/gm;
+  const diffRegex = /^diff --git a\/(.+?) b\/.*\n[\s\S]*?(?=^diff --git |\u0000|$)/gm;
   let result = "";
   let lastIndex = 0;
 
@@ -536,38 +747,32 @@ async function executeMergeTemplatePayload(
   const repo = normalizeRepoSource(resolveVariables(payload.repo, context.variables));
   const ref = resolveVariables(payload.ref, context.variables);
   const remoteName = `ill-template-${Date.now()}`;
+  const protectedPathsRaw = payload.protectedPaths.map(value => renderTemplateValue(value, context.variables));
+  const protectedPaths = normalizeProtectedPaths(protectedPathsRaw, context.cwd).map(normalizePathForCompare);
 
   try {
     await runGit(["remote", "add", remoteName, repo], context.cwd);
     await runGit(["fetch", "--depth", "20", remoteName, ref], context.cwd);
 
-    const { patch, deletedFiles } = await previewPatch(payload, context.cwd);
+    const { patch, deletedFiles } = await previewPatch(payload, context.cwd, protectedPaths);
     if (!patch) {
       return;
     }
     let nextPatch = patch;
-    const keepFiles = new Set<string>();
-    const keepSnapshots = new Map<string, Buffer>();
-
     const pendingDeletions = deletedFiles;
-    const templateOwnedDeletions = await filterTemplateOwnedDeletions(deletedFiles, context.cwd);
+    const templateOwnedDeletions = await filterTemplateOwnedDeletions(pendingDeletions, context.cwd);
     if (!payload.allowDeletes && templateOwnedDeletions.length > 0) {
       throw new Error(
         `Template update wants to delete these files:\n${formatFileList(templateOwnedDeletions)}\nEnable deletions by setting allowDeletes: true or move the files out of template control.`,
       );
     }
 
-    const protectedPathsRaw = payload.protectedPaths.map(value => renderTemplateValue(value, context.variables));
-    const protectedPaths = normalizeProtectedPaths(protectedPathsRaw, context.cwd).map(normalizePathForCompare);
     if (payload.allowDeletes) {
+      const keepFiles = new Set<string>();
       const deletionsToConfirm: string[] = [];
 
       for (const file of pendingDeletions) {
-        if (isProtectedFile(file, protectedPaths)) {
-          keepFiles.add(file);
-        } else {
-          deletionsToConfirm.push(file);
-        }
+        deletionsToConfirm.push(file);
       }
 
       if (deletionsToConfirm.length > 0) {
@@ -575,22 +780,10 @@ async function executeMergeTemplatePayload(
         if (!decision.proceed) {
           throw new Error("Template merge cancelled by user (deletions skipped).");
         }
-        for (const file of deletionsToConfirm) {
-          const absolute = path.resolve(context.cwd, file);
-          if (!existsSync(absolute)) {
-            decision.keep.add(file);
-          }
-        }
         decision.keep.forEach(file => keepFiles.add(file));
       }
 
       if (keepFiles.size > 0) {
-        for (const file of keepFiles) {
-          const absolute = path.resolve(context.cwd, file);
-          if (existsSync(absolute)) {
-            keepSnapshots.set(file, await readFile(absolute));
-          }
-        }
         nextPatch = removeKeptDeletionsFromPatch(nextPatch, keepFiles);
         if (!nextPatch.trim()) {
           return;
@@ -599,21 +792,6 @@ async function executeMergeTemplatePayload(
     }
 
     await applyPatch(nextPatch, context.cwd);
-
-    if (keepFiles.size > 0) {
-      for (const file of keepFiles) {
-        const absolute = path.resolve(context.cwd, file);
-        if (!existsSync(absolute)) {
-          const snapshot = keepSnapshots.get(file);
-          if (snapshot) {
-            await mkdir(path.dirname(absolute), { recursive: true });
-            await writeFile(absolute, snapshot);
-          } else {
-            // fall back to leaving a conflict marker; git apply already reported the issue
-          }
-        }
-      }
-    }
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }
