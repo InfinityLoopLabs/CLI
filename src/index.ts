@@ -13,15 +13,51 @@ export * from "./init";
 export * from "./runtime";
 export * from "./plugins";
 export * from "./plugins/add";
+export * from "./plugins/copy";
 export * from "./plugins/download";
 export * from "./plugins/insert";
 export * from "./plugins/merge-template";
+export * from "./plugins/rename";
 export * from "./plugins/remove-line";
 export * from "./plugins/remove";
+
+function resolveCommandKeyAndName(options: {
+  commandKey?: string;
+  commandArgs?: string[];
+  name?: string;
+}): { commandKey?: string; name?: string; kind?: string } {
+  if (options.commandKey !== "add") {
+    return {
+      commandKey: options.commandKey,
+      name: options.name,
+    };
+  }
+
+  const [kindRaw, nameFromPositional] = options.commandArgs ?? [];
+  const kind = kindRaw?.toLowerCase();
+  const name = options.name ?? nameFromPositional;
+
+  if (!kind) {
+    throw new Error('Add usage: ill add <widget|service> <Name>.');
+  }
+  if (!name) {
+    throw new Error('Add usage: ill add <widget|service> <Name>.');
+  }
+
+  if (kind === "widget") {
+    return { commandKey: "addWidget", name, kind };
+  }
+  if (kind === "service") {
+    return { commandKey: "addService", name, kind };
+  }
+
+  throw new Error(`Unknown add target "${kindRaw}". Allowed values: widget, service.`);
+}
 
 export async function runCli(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage: ill <commandKey> [--name <value>] [--config <path>] [--cwd <path>]");
+    console.log("Add:   ill add <widget|service> <Name>");
     console.log(
       "Init:  ill init [--repo <owner/repo|url>] [--target-repo <owner/repo|url>] [--ref <branch|tag>] [--force]",
     );
@@ -44,14 +80,16 @@ export async function runCli(args: string[]): Promise<number> {
       return 0;
     }
 
+    const resolved = resolveCommandKeyAndName(options);
     const { config, configPath } = await loadProjectConfig(options.cwd, options.configPath);
     const variables: Variables = {
-      name: options.name,
+      name: resolved.name,
+      kind: resolved.kind,
     };
 
     const stepsCount = await runCommandByKey(
       config,
-      options.commandKey,
+      resolved.commandKey,
       options.cwd,
       variables,
       builtinPlugins,
@@ -61,7 +99,7 @@ export async function runCli(args: string[]): Promise<number> {
     if (configPath) {
       console.log(`Loaded config: ${path.relative(options.cwd, configPath)}`);
     }
-    console.log(`Command: ${options.commandKey}`);
+    console.log(`Command: ${resolved.commandKey}`);
     console.log(`Steps executed: ${stepsCount}`);
 
     return 0;

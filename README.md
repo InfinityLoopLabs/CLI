@@ -56,6 +56,13 @@ Run any configured command key:
 ill <commandKey> --name MyFeature
 ```
 
+Shortcut for feature generation:
+
+```bash
+ill add widget Header
+ill add service Auth
+```
+
 Extended form:
 
 ```bash
@@ -111,8 +118,10 @@ module.exports = {
 ## Step Types
 
 - `add`: copy file/folder from `from` to `to` with optional `replace`.
+- `copy`: copy file/folder from `from` to `to` without substitutions.
 - `download`: clone template repository and copy into `cwd` without `.git` and `.github`. `.gitignore` is preserved. Works in non-empty folders by default; set `allowNonEmpty: false` to require empty target.
 - `merge-template`: starts merge from template and mirrors full template snapshot on success. If merge is already in progress, CLI stops and asks you to resolve it first.
 - `insert`: insert `line` after `placeholder` in `file`.
+- `rename`: replace tokens in file contents and file/directory names inside `target` with case preservation (`Sample` / `sample` / `SAMPLE`).
 - `remove-line`: remove a line from `file` by text match.
 - `remove`: delete file/folder at `target`.

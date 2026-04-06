@@ -4,6 +4,7 @@ export type CliOptions = {
   cwd: string;
   configPath?: string;
   commandKey?: string;
+  commandArgs?: string[];
   name?: string;
   repo?: string;
   targetRepo?: string;

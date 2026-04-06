@@ -89,5 +89,6 @@ export function parseArgs(args: string[]): CliOptions {
   }
 
   options.commandKey = positional[0];
+  options.commandArgs = positional.slice(1);
   return options;
 }
