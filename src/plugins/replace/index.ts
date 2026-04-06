@@ -7,6 +7,7 @@ type ReplacePayload = {
   file: TemplateValue;
   search: TemplateValue;
   replace: TemplateValue;
+  optional: boolean;
 };
 
 function parseReplacePayload(rawStep: CommandStepRaw, context: PluginParseContext): ReplacePayload {
@@ -14,6 +15,7 @@ function parseReplacePayload(rawStep: CommandStepRaw, context: PluginParseContex
     file: assertTemplateValue(rawStep.file, "file", context),
     search: assertTemplateValue(rawStep.search, "search", context),
     replace: assertTemplateValue(rawStep.replace, "replace", context),
+    optional: Boolean(rawStep.optional),
   };
 }
 
@@ -24,6 +26,9 @@ async function executeReplacePayload(payload: ReplacePayload, context: PluginExe
 
   const content = await readFile(filePath, "utf8");
   if (!content.includes(searchValue)) {
+    if (payload.optional) {
+      return;
+    }
     throw new Error(`Replace target "${searchValue}" not found in file: ${filePath}`);
   }
 
