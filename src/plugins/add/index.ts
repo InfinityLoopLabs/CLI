@@ -1,8 +1,15 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
 import { isPlainObject } from "../../shared/is-plain-object";
+import { compactMessages, toRelativeLogPath } from "../../shared/report";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type ReplaceRule = {
@@ -14,6 +21,11 @@ type AddPayload = {
   from: TemplateValue;
   to: TemplateValue;
   replace: ReplaceRule[];
+};
+
+type FileCopyResult = {
+  targetFilePath: string;
+  created: boolean;
 };
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -104,7 +116,8 @@ async function copyFileWithTransforms(
   targetFilePath: string,
   replace: ReplaceRule[],
   context: PluginExecuteContext,
-): Promise<void> {
+): Promise<FileCopyResult> {
+  const created = !existsSync(targetFilePath);
   await mkdir(path.dirname(targetFilePath), { recursive: true });
   const buffer = await readFile(sourceFilePath);
   if (isLikelyTextFile(buffer)) {
@@ -113,6 +126,10 @@ async function copyFileWithTransforms(
   } else {
     await writeFile(targetFilePath, buffer);
   }
+  return {
+    targetFilePath,
+    created,
+  };
 }
 
 async function copyDirWithTransforms(
@@ -120,7 +137,8 @@ async function copyDirWithTransforms(
   targetDir: string,
   replace: ReplaceRule[],
   context: PluginExecuteContext,
-): Promise<void> {
+): Promise<FileCopyResult[]> {
+  const copiedFiles: FileCopyResult[] = [];
   await mkdir(targetDir, { recursive: true });
   const entries = await readdir(sourceDir, { withFileTypes: true });
 
@@ -130,17 +148,20 @@ async function copyDirWithTransforms(
     const targetPath = path.join(targetDir, transformedName);
 
     if (entry.isDirectory()) {
-      await copyDirWithTransforms(sourcePath, targetPath, replace, context);
+      const nested = await copyDirWithTransforms(sourcePath, targetPath, replace, context);
+      copiedFiles.push(...nested);
       continue;
     }
 
     if (entry.isFile()) {
-      await copyFileWithTransforms(sourcePath, targetPath, replace, context);
+      copiedFiles.push(await copyFileWithTransforms(sourcePath, targetPath, replace, context));
     }
   }
+
+  return copiedFiles;
 }
 
-async function executeAddPayload(payload: AddPayload, context: PluginExecuteContext): Promise<void> {
+async function executeAddPayload(payload: AddPayload, context: PluginExecuteContext): Promise<PluginExecutionResult> {
   const sourcePath = path.resolve(context.cwd, renderTemplateValue(payload.from, context.variables));
   const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.to, context.variables));
   if (!existsSync(sourcePath)) {
@@ -149,13 +170,11 @@ async function executeAddPayload(payload: AddPayload, context: PluginExecuteCont
 
   const sourceStats = await stat(sourcePath);
   const transformedTargetPath = applyReplaceRules(targetPath, payload.replace, context.variables);
+  const copiedFiles: FileCopyResult[] = [];
 
   if (sourceStats.isDirectory()) {
-    await copyDirWithTransforms(sourcePath, transformedTargetPath, payload.replace, context);
-    return;
-  }
-
-  if (sourceStats.isFile()) {
+    copiedFiles.push(...(await copyDirWithTransforms(sourcePath, transformedTargetPath, payload.replace, context)));
+  } else if (sourceStats.isFile()) {
     let targetFilePath = transformedTargetPath;
     if (existsSync(transformedTargetPath)) {
       const targetStats = await stat(transformedTargetPath);
@@ -165,11 +184,18 @@ async function executeAddPayload(payload: AddPayload, context: PluginExecuteCont
         targetFilePath = path.join(transformedTargetPath, transformedName);
       }
     }
-    await copyFileWithTransforms(sourcePath, targetFilePath, payload.replace, context);
-    return;
+    copiedFiles.push(await copyFileWithTransforms(sourcePath, targetFilePath, payload.replace, context));
+  } else {
+    throw new Error(`Add source path must be a file or directory: ${sourcePath}`);
   }
 
-  throw new Error(`Add source path must be a file or directory: ${sourcePath}`);
+  const messages = compactMessages(
+    copiedFiles.map((entry) => {
+      const status = entry.created ? "Created file" : "Updated file";
+      return `${status}: ${toRelativeLogPath(context.cwd, entry.targetFilePath)}`;
+    }),
+  );
+  return { messages };
 }
 
 export const addPlugin: CommandPlugin = {
@@ -178,6 +204,6 @@ export const addPlugin: CommandPlugin = {
     return parseAddPayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeAddPayload(payload as AddPayload, context);
+    return await executeAddPayload(payload as AddPayload, context);
   },
 };

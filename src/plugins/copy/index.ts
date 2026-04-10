@@ -1,12 +1,24 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
+import { compactMessages, toRelativeLogPath } from "../../shared/report";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type CopyPayload = {
   from: TemplateValue;
   to: TemplateValue;
+};
+
+type FileCopyResult = {
+  targetFilePath: string;
+  created: boolean;
 };
 
 function parseCopyPayload(rawStep: CommandStepRaw, context: PluginParseContext): CopyPayload {
@@ -16,13 +28,19 @@ function parseCopyPayload(rawStep: CommandStepRaw, context: PluginParseContext):
   };
 }
 
-async function copyFile(sourceFilePath: string, targetFilePath: string): Promise<void> {
+async function copyFile(sourceFilePath: string, targetFilePath: string): Promise<FileCopyResult> {
+  const created = !existsSync(targetFilePath);
   await mkdir(path.dirname(targetFilePath), { recursive: true });
   const buffer = await readFile(sourceFilePath);
   await writeFile(targetFilePath, buffer);
+  return {
+    targetFilePath,
+    created,
+  };
 }
 
-async function copyDir(sourceDir: string, targetDir: string): Promise<void> {
+async function copyDir(sourceDir: string, targetDir: string): Promise<FileCopyResult[]> {
+  const copiedFiles: FileCopyResult[] = [];
   await mkdir(targetDir, { recursive: true });
   const entries = await readdir(sourceDir, { withFileTypes: true });
 
@@ -31,17 +49,20 @@ async function copyDir(sourceDir: string, targetDir: string): Promise<void> {
     const targetPath = path.join(targetDir, entry.name);
 
     if (entry.isDirectory()) {
-      await copyDir(sourcePath, targetPath);
+      const nested = await copyDir(sourcePath, targetPath);
+      copiedFiles.push(...nested);
       continue;
     }
 
     if (entry.isFile()) {
-      await copyFile(sourcePath, targetPath);
+      copiedFiles.push(await copyFile(sourcePath, targetPath));
     }
   }
+
+  return copiedFiles;
 }
 
-async function executeCopyPayload(payload: CopyPayload, context: PluginExecuteContext): Promise<void> {
+async function executeCopyPayload(payload: CopyPayload, context: PluginExecuteContext): Promise<PluginExecutionResult> {
   const sourcePath = path.resolve(context.cwd, renderTemplateValue(payload.from, context.variables));
   const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.to, context.variables));
   if (!existsSync(sourcePath)) {
@@ -49,12 +70,10 @@ async function executeCopyPayload(payload: CopyPayload, context: PluginExecuteCo
   }
 
   const sourceStats = await stat(sourcePath);
+  const copiedFiles: FileCopyResult[] = [];
   if (sourceStats.isDirectory()) {
-    await copyDir(sourcePath, targetPath);
-    return;
-  }
-
-  if (sourceStats.isFile()) {
+    copiedFiles.push(...(await copyDir(sourcePath, targetPath)));
+  } else if (sourceStats.isFile()) {
     let targetFilePath = targetPath;
     if (existsSync(targetPath)) {
       const targetStats = await stat(targetPath);
@@ -63,11 +82,18 @@ async function executeCopyPayload(payload: CopyPayload, context: PluginExecuteCo
       }
     }
 
-    await copyFile(sourcePath, targetFilePath);
-    return;
+    copiedFiles.push(await copyFile(sourcePath, targetFilePath));
+  } else {
+    throw new Error(`Copy source path must be a file or directory: ${sourcePath}`);
   }
 
-  throw new Error(`Copy source path must be a file or directory: ${sourcePath}`);
+  const messages = compactMessages(
+    copiedFiles.map((entry) => {
+      const status = entry.created ? "Created file" : "Updated file";
+      return `${status}: ${toRelativeLogPath(context.cwd, entry.targetFilePath)}`;
+    }),
+  );
+  return { messages };
 }
 
 export const copyPlugin: CommandPlugin = {
@@ -76,6 +102,6 @@ export const copyPlugin: CommandPlugin = {
     return parseCopyPayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeCopyPayload(payload as CopyPayload, context);
+    return await executeCopyPayload(payload as CopyPayload, context);
   },
 };

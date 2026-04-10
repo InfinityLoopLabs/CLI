@@ -4,7 +4,13 @@ import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { isDeepStrictEqual, promisify } from "node:util";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 const execFileAsync = promisify(execFile);
@@ -869,7 +875,7 @@ function resolveDryRunFlag(variables: Record<string, string | undefined>): boole
 async function executeMergeTemplatePayload(
   payload: MergeTemplatePayload,
   context: PluginExecuteContext,
-): Promise<void> {
+): Promise<PluginExecutionResult> {
   await ensureGitRepository(context.cwd);
   await ensureNoMergeInProgress(context.cwd);
 
@@ -921,10 +927,13 @@ async function executeMergeTemplatePayload(
     nonTemplateOwnedDeletions.forEach(file => keepFiles.add(file));
 
     if (dryRun) {
-      console.log(`Planned operations: ${operations.length}`);
-      console.log(`Template-owned deletions: ${templateOwnedDeletions.length}`);
-      console.log(`Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`);
-      return;
+      return {
+        messages: [
+          `Plan mode: ${operations.length} operation(s)`,
+          `Template-owned deletions: ${templateOwnedDeletions.length}`,
+          `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+        ],
+      };
     }
 
     let nextPatch = patch;
@@ -937,6 +946,13 @@ async function executeMergeTemplatePayload(
     }
 
     await setGitRef(refs.currentRef, fetchedCommit, context.cwd);
+    return {
+      messages: [
+        `Template sync applied: ${operations.length} operation(s)`,
+        `Template-owned deletions applied: ${templateOwnedDeletions.length}`,
+        `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+      ],
+    };
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }
@@ -948,6 +964,6 @@ export const mergeTemplatePlugin: CommandPlugin = {
     return parseMergeTemplatePayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeMergeTemplatePayload(payload as MergeTemplatePayload, context);
+    return await executeMergeTemplatePayload(payload as MergeTemplatePayload, context);
   },
 };

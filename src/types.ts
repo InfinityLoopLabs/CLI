@@ -1,5 +1,9 @@
 export type Variables = Record<string, string | undefined>;
 
+export type PluginExecutionResult = {
+  messages?: string[];
+};
+
 export type CliOptions = {
   cwd: string;
   configPath?: string;
@@ -42,5 +46,5 @@ export type PluginExecuteContext = {
 export type CommandPlugin = {
   type: string;
   parse: (rawStep: CommandStepRaw, context: PluginParseContext) => unknown;
-  execute: (payload: unknown, context: PluginExecuteContext) => Promise<void>;
+  execute: (payload: unknown, context: PluginExecuteContext) => Promise<PluginExecutionResult | void>;
 };

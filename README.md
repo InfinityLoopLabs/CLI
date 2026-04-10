@@ -56,13 +56,15 @@ Run any configured command key:
 ill <commandKey> --name MyFeature
 ```
 
-Shortcut for feature generation:
+Run command keys declared in `infinityloop.config.*`:
 
 ```bash
-ill add widget Header
-ill add service Auth
-ill remove widget Header
-ill remove service Auth
+ill addWidget Header
+ill addService Auth
+ill addOpenApiConfig Billing
+ill removeWidget Header
+ill removeService Auth
+ill removeOpenApiConfig Billing
 ```
 
 Extended form:
@@ -135,7 +137,6 @@ module.exports = {
 - Fields such as `file`, `placeholder`, `line`, `search`, and `replace` accept either a string with `$variable` / `${variable}` placeholders or a function `(variables) => string`.
 - Available variables:
   - `name`, `namePascal`, `nameCamel`, `nameLower`, `nameSnake`, `nameKebab`, `nameScreamingSnake`
-  - `kind` (`widget` / `service` when using `ill add|remove`).
 - Any extra CLI flag becomes a variable: `--store-name=SideMenu` exposes `${storeName}`, `--dry-run` sets `${dryRun}` to `"true"`, and disabling flags like `--no-store` / `--nostore` set `${store}` to `"false"` while `${noStore}` becomes `"true"`. Flag names are normalized to camelCase by stripping dashes/underscores, but you can still reference hyphenated names in `when` expressions (e.g. `when: "!no-store"`).
 - The `read` step is typically used to load a `.cli` file with entries like `PROJECT_NAME=my-app`. Each `KEY=VALUE` pair becomes available via `${KEY}` or `${key}` in later steps.
 - For `${variable}` syntax, the placeholder casing controls the transform: `${name}` lowers the first letter, `${Name}` capitalizes it, `${NAME}` uppercases the whole string. Plain `$variable` keeps the stored value.

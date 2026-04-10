@@ -1,4 +1,4 @@
-import type { CommandPlugin, CommandStepRaw, ProjectConfig, Variables } from "./types";
+import type { CommandPlugin, CommandStepRaw, PluginExecutionResult, ProjectConfig, Variables } from "./types";
 import { normalizeKey } from "./shared/normalize-key";
 
 type PluginRegistry = Map<string, CommandPlugin>;
@@ -63,6 +63,16 @@ export function createPluginRegistry(plugins: CommandPlugin[]): PluginRegistry {
   return registry;
 }
 
+function printStepResult(stepType: string, result?: PluginExecutionResult | void): void {
+  if (!result?.messages || result.messages.length === 0) {
+    return;
+  }
+
+  for (const message of result.messages) {
+    console.log(`[${stepType}] ${message}`);
+  }
+}
+
 function getPluginOrThrow(registry: PluginRegistry, type: string, contextMessage: string): CommandPlugin {
   const plugin = registry.get(type);
   if (plugin) {
@@ -110,7 +120,8 @@ export async function runCommandByKey(
       commandKey,
       stepIndex,
     });
-    await plugin.execute(payload, { cwd, variables });
+    const result = await plugin.execute(payload, { cwd, variables });
+    printStepResult(step.type, result);
     executedSteps += 1;
   }
 

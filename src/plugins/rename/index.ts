@@ -2,8 +2,15 @@ import { rename as renamePath } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
 import { isPlainObject } from "../../shared/is-plain-object";
+import { compactMessages, toRelativeLogPath } from "../../shared/report";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 type ReplaceRule = {
@@ -92,14 +99,23 @@ function isLikelyTextFile(buffer: Buffer): boolean {
   return true;
 }
 
-async function rewriteContent(filePath: string, payload: RenamePayload, context: PluginExecuteContext): Promise<void> {
+async function rewriteContent(
+  filePath: string,
+  payload: RenamePayload,
+  context: PluginExecuteContext,
+): Promise<boolean> {
   const buffer = await readFile(filePath);
   if (!isLikelyTextFile(buffer)) {
-    return;
+    return false;
   }
 
-  const next = applyReplaceRules(buffer.toString("utf8"), payload.replace, context.variables);
+  const initial = buffer.toString("utf8");
+  const next = applyReplaceRules(initial, payload.replace, context.variables);
+  if (next === initial) {
+    return false;
+  }
   await writeFile(filePath, next, "utf8");
+  return true;
 }
 
 async function collectPathsRecursively(root: string): Promise<string[]> {
@@ -118,20 +134,35 @@ async function collectPathsRecursively(root: string): Promise<string[]> {
   return paths;
 }
 
-async function executeRenamePayload(payload: RenamePayload, context: PluginExecuteContext): Promise<void> {
+async function executeRenamePayload(
+  payload: RenamePayload,
+  context: PluginExecuteContext,
+): Promise<PluginExecutionResult> {
   const targetPath = path.resolve(context.cwd, renderTemplateValue(payload.target, context.variables));
   if (!existsSync(targetPath)) {
     throw new Error(`Rename target path does not exist: ${targetPath}`);
   }
+  const messages: string[] = [];
 
   const targetStats = await stat(targetPath);
   if (targetStats.isFile()) {
-    await rewriteContent(targetPath, payload, context);
+    const contentChanged = await rewriteContent(targetPath, payload, context);
+    if (contentChanged) {
+      messages.push(`Updated file content: ${toRelativeLogPath(context.cwd, targetPath)}`);
+    }
+
     const nextName = applyReplaceRules(path.basename(targetPath), payload.replace, context.variables);
     if (nextName !== path.basename(targetPath)) {
-      await renamePath(targetPath, path.join(path.dirname(targetPath), nextName));
+      const nextPath = path.join(path.dirname(targetPath), nextName);
+      await renamePath(targetPath, nextPath);
+      messages.push(
+        `Renamed path: ${toRelativeLogPath(context.cwd, targetPath)} -> ${toRelativeLogPath(context.cwd, nextPath)}`,
+      );
     }
-    return;
+    if (messages.length === 0) {
+      messages.push(`No rename changes in target: ${toRelativeLogPath(context.cwd, targetPath)}`);
+    }
+    return { messages: compactMessages(messages) };
   }
 
   if (!targetStats.isDirectory()) {
@@ -143,7 +174,10 @@ async function executeRenamePayload(payload: RenamePayload, context: PluginExecu
   for (const entryPath of allPaths) {
     const entryStats = await stat(entryPath);
     if (entryStats.isFile()) {
-      await rewriteContent(entryPath, payload, context);
+      const contentChanged = await rewriteContent(entryPath, payload, context);
+      if (contentChanged) {
+        messages.push(`Updated file content: ${toRelativeLogPath(context.cwd, entryPath)}`);
+      }
     }
   }
 
@@ -159,7 +193,18 @@ async function executeRenamePayload(payload: RenamePayload, context: PluginExecu
     const nextPath = path.join(path.dirname(candidate.currentPath), candidate.nextName);
     await mkdir(path.dirname(nextPath), { recursive: true });
     await renamePath(candidate.currentPath, nextPath);
+    messages.push(
+      `Renamed path: ${toRelativeLogPath(context.cwd, candidate.currentPath)} -> ${toRelativeLogPath(context.cwd, nextPath)}`,
+    );
   }
+
+  if (messages.length === 0) {
+    messages.push(`No rename changes in target: ${toRelativeLogPath(context.cwd, targetPath)}`);
+  }
+
+  return {
+    messages: compactMessages(messages),
+  };
 }
 
 export const renamePlugin: CommandPlugin = {
@@ -168,6 +213,6 @@ export const renamePlugin: CommandPlugin = {
     return parseRenamePayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeRenamePayload(payload as RenamePayload, context);
+    return await executeRenamePayload(payload as RenamePayload, context);
   },
 };

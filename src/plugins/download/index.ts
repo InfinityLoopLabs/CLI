@@ -3,7 +3,14 @@ import { cp, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
+import { compactMessages } from "../../shared/report";
 
 const execFileAsync = promisify(execFile);
 
@@ -120,8 +127,9 @@ async function runGitClone(repo: string, ref: string | undefined, targetPath: st
   }
 }
 
-async function copyTemplateToCwd(sourceRepoDir: string, cwd: string): Promise<void> {
+async function copyTemplateToCwd(sourceRepoDir: string, cwd: string): Promise<string[]> {
   const entries = await readdir(sourceRepoDir, { withFileTypes: true });
+  const copiedTopLevelEntries: string[] = [];
 
   for (const entry of entries) {
     if (isGitRelatedName(entry.name)) {
@@ -144,10 +152,16 @@ async function copyTemplateToCwd(sourceRepoDir: string, cwd: string): Promise<vo
         return !parts.some((part) => isGitRelatedName(part));
       },
     });
+    copiedTopLevelEntries.push(entry.name);
   }
+
+  return copiedTopLevelEntries;
 }
 
-async function executeDownloadPayload(payload: DownloadPayload, context: PluginExecuteContext): Promise<void> {
+async function executeDownloadPayload(
+  payload: DownloadPayload,
+  context: PluginExecuteContext,
+): Promise<PluginExecutionResult> {
   if (!payload.allowNonEmpty) {
     await ensureTargetIsEmpty(context.cwd);
   }
@@ -160,7 +174,13 @@ async function executeDownloadPayload(payload: DownloadPayload, context: PluginE
 
   try {
     await runGitClone(repo, ref, tempRepoDir, context.cwd);
-    await copyTemplateToCwd(tempRepoDir, context.cwd);
+    const copiedTopLevelEntries = await copyTemplateToCwd(tempRepoDir, context.cwd);
+    const messages = compactMessages([
+      `Downloaded template: ${repo}${ref ? `#${ref}` : ""}`,
+      `Copied ${copiedTopLevelEntries.length} top-level item(s) into current directory`,
+      ...copiedTopLevelEntries.map((entry) => `Copied: ${entry}`),
+    ]);
+    return { messages };
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -172,6 +192,6 @@ export const downloadPlugin: CommandPlugin = {
     return parseDownloadPayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeDownloadPayload(payload as DownloadPayload, context);
+    return await executeDownloadPayload(payload as DownloadPayload, context);
   },
 };

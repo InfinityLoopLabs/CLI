@@ -24,51 +24,6 @@ export * from "./plugins/remove-line";
 export * from "./plugins/remove";
 export * from "./plugins/read";
 
-function resolveCommandKeyAndName(options: {
-  commandKey?: string;
-  commandArgs?: string[];
-  name?: string;
-}): { commandKey?: string; name?: string; kind?: string } {
-  if (options.commandKey !== "add" && options.commandKey !== "remove") {
-    return {
-      commandKey: options.commandKey,
-      name: options.name,
-    };
-  }
-
-  const [kindRaw, nameFromPositional] = options.commandArgs ?? [];
-  const kind = kindRaw?.toLowerCase();
-  const name = options.name ?? nameFromPositional;
-
-  const commandLabel = options.commandKey;
-  if (!kind || !name) {
-    throw new Error(
-      commandLabel === "add"
-        ? 'Add usage: ill add <widget|service> <Name>.'
-        : 'Remove usage: ill remove <widget|service> <Name>.',
-    );
-  }
-
-  if (kind === "widget") {
-    return {
-      commandKey: commandLabel === "add" ? "addWidget" : "removeWidget",
-      name,
-      kind,
-    };
-  }
-  if (kind === "service") {
-    return {
-      commandKey: commandLabel === "add" ? "addService" : "removeService",
-      name,
-      kind,
-    };
-  }
-
-  throw new Error(
-    `Unknown ${commandLabel} target "${kindRaw}". Allowed values: widget, service.`,
-  );
-}
-
 function toLowerFirst(value: string | undefined): string | undefined {
   if (!value) {
     return value;
@@ -169,15 +124,13 @@ async function commandPlan(options: ReturnType<typeof parseArgs>): Promise<numbe
 
 export async function runCli(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
-    console.log("Usage: ill <commandKey> [--name <value>] [--config <path>] [--cwd <path>]");
-    console.log("Add:   ill add <widget|service> <Name>");
-    console.log("Remove: ill remove <widget|service> <Name>");
+    console.log("Usage: ill <commandKey> [name] [--name <value>] [--config <path>] [--cwd <path>]");
     console.log("Plan:  ill plan [--config <path>] [--cwd <path>]");
     console.log(
       "Init:  ill init [--repo <owner/repo|url>] [--target-repo <owner/repo|url>] [--ref <branch|tag>] [--force]",
     );
     console.log("Auto config names: infinityloop.config.js|mjs|cjs");
-    console.log("Example: ill createWidget --name=Popup");
+    console.log("Example: ill addOpenApiConfig payments");
     return 0;
   }
 
@@ -198,17 +151,22 @@ export async function runCli(args: string[]): Promise<number> {
       return await commandPlan(options);
     }
 
-    const resolved = resolveCommandKeyAndName(options);
+    if (!options.commandKey) {
+      throw new Error('Command key is required. Use "ill --help" for usage.');
+    }
+
+    const nameFromPositional = options.commandArgs?.[0];
+    const commandKey = options.commandKey;
+    const name = options.name ?? nameFromPositional;
     const { config, configPath } = await loadProjectConfig(options.cwd, options.configPath);
     const variables: Variables = {
-      ...createNameVariants(resolved.name),
-      kind: resolved.kind,
+      ...createNameVariants(name),
       ...(options.params ?? {}),
     };
 
     const stepsCount = await runCommandByKey(
       config,
-      resolved.commandKey,
+      commandKey,
       options.cwd,
       variables,
       builtinPlugins,
@@ -218,7 +176,7 @@ export async function runCli(args: string[]): Promise<number> {
     if (configPath) {
       console.log(`Loaded config: ${path.relative(options.cwd, configPath)}`);
     }
-    console.log(`Command: ${resolved.commandKey}`);
+    console.log(`Command: ${commandKey}`);
     console.log(`Steps executed: ${stepsCount}`);
 
     return 0;

@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { CommandPlugin, CommandStepRaw, PluginExecuteContext, PluginParseContext } from "../../types";
+import type {
+  CommandPlugin,
+  CommandStepRaw,
+  PluginExecuteContext,
+  PluginExecutionResult,
+  PluginParseContext,
+} from "../../types";
+import { compactMessages, toRelativeLogPath } from "../../shared/report";
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 import { normalizeKey } from "../../shared/normalize-key";
 
@@ -50,7 +57,7 @@ function assignVariable(target: Record<string, string | undefined>, key: string,
   }
 }
 
-async function executeReadPayload(payload: ReadPayload, context: PluginExecuteContext): Promise<void> {
+async function executeReadPayload(payload: ReadPayload, context: PluginExecuteContext): Promise<PluginExecutionResult> {
   const filePath = path.resolve(context.cwd, renderTemplateValue(payload.file, context.variables));
   let content: string;
   try {
@@ -58,7 +65,9 @@ async function executeReadPayload(payload: ReadPayload, context: PluginExecuteCo
   } catch (error) {
     const nodeError = error as NodeJS.ErrnoException;
     if (nodeError.code === "ENOENT") {
-      return;
+      return {
+        messages: [`Read skipped (file not found): ${toRelativeLogPath(context.cwd, filePath)}`],
+      };
     }
     throw error;
   }
@@ -67,6 +76,13 @@ async function executeReadPayload(payload: ReadPayload, context: PluginExecuteCo
   for (const [key, value] of Object.entries(entries)) {
     assignVariable(context.variables, key, value);
   }
+
+  const loadedKeys = Object.keys(entries);
+  const messages = compactMessages([
+    `Loaded ${loadedKeys.length} variable(s) from ${toRelativeLogPath(context.cwd, filePath)}`,
+    ...loadedKeys.map((key) => `Loaded variable: ${key}`),
+  ]);
+  return { messages };
 }
 
 export const readPlugin: CommandPlugin = {
@@ -75,6 +91,6 @@ export const readPlugin: CommandPlugin = {
     return parseReadPayload(rawStep, context);
   },
   async execute(payload, context) {
-    await executeReadPayload(payload as ReadPayload, context);
+    return await executeReadPayload(payload as ReadPayload, context);
   },
 };
