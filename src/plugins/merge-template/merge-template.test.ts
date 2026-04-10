@@ -18,6 +18,11 @@ async function getCurrentBranch(cwd: string): Promise<string> {
   return stdout.trim();
 }
 
+async function resolveRef(ref: string, cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["rev-parse", ref], { cwd });
+  return stdout.trim();
+}
+
 test("merge-template applies changes without deleting local-only files", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ill-merge-diff-"));
 
@@ -130,7 +135,7 @@ test("merge-template removes files when allowDeletes is true", async () => {
   }
 });
 
-test("merge-template blocks deletions when allowDeletes is false", async () => {
+test("merge-template applies template deletions regardless of allowDeletes flag", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ill-merge-block-delete-"));
 
   try {
@@ -174,17 +179,12 @@ test("merge-template blocks deletions when allowDeletes is false", async () => {
       },
     );
 
-    await assert.rejects(
-      () =>
-        mergeTemplatePlugin.execute(payload, {
-          cwd: targetRepo,
-          variables: {},
-        }),
-      /Template update wants to delete these files/,
-    );
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
 
-    const extraContent = await readFile(path.join(targetRepo, "extra.txt"), "utf8");
-    assert.equal(extraContent, "local\n");
+    await assert.rejects(readFile(path.join(targetRepo, "extra.txt"), "utf8"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -386,6 +386,182 @@ test("merge-template preserves local package json changes while applying templat
       await readFile(path.join(targetRepo, "package.json"), "utf8"),
       '{\n  "name": "react-polygon",\n  "version": "2.0.0"\n}\n',
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merge-template uses template history baseline on repeated sync", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-history-state-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(templateRepo, { recursive: true });
+    await writeFile(path.join(templateRepo, "core.txt"), "core-v1\n", "utf8");
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+    const templateV1Commit = await resolveRef("HEAD", templateRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(path.join(targetRepo, "core.txt"), "core-v1\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target v1"], targetRepo);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        allowDeletes: true,
+        protectedPaths: [],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    await writeFile(path.join(targetRepo, "core.txt"), "core-local-custom\n", "utf8");
+
+    await writeFile(path.join(templateRepo, "new-shared.txt"), "shared-v2\n", "utf8");
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v2"], templateRepo);
+    const templateV2Commit = await resolveRef("HEAD", templateRepo);
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    assert.equal(await readFile(path.join(targetRepo, "core.txt"), "utf8"), "core-local-custom\n");
+    assert.equal(await readFile(path.join(targetRepo, "new-shared.txt"), "utf8"), "shared-v2\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merge-template dry-run does not apply patch", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-dry-run-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(templateRepo, { recursive: true });
+    await writeFile(path.join(templateRepo, "core.txt"), "core-v1\n", "utf8");
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(path.join(targetRepo, "core.txt"), "core-v1\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target v1"], targetRepo);
+
+    await writeFile(path.join(templateRepo, "core.txt"), "core-v2\n", "utf8");
+    await runGit(["add", "core.txt"], templateRepo);
+    await runGit(["commit", "-m", "template v2"], templateRepo);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        allowDeletes: true,
+        protectedPaths: [],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {
+        dryRun: "true",
+      },
+    });
+
+    assert.equal(await readFile(path.join(targetRepo, "core.txt"), "utf8"), "core-v1\n");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("merge-template keeps product-only files on first sync even with allowDeletes true", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-keep-product-only-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(templateRepo, { recursive: true });
+    await writeFile(path.join(templateRepo, "managed.txt"), "managed-v1\n", "utf8");
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+
+    await writeFile(path.join(templateRepo, "managed.txt"), "managed-v2\n", "utf8");
+    await runGit(["add", "managed.txt"], templateRepo);
+    await runGit(["commit", "-m", "template v2"], templateRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(path.join(targetRepo, "managed.txt"), "managed-v1\n", "utf8");
+    await writeFile(path.join(targetRepo, "feature-only.txt"), "local-only\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target v1"], targetRepo);
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        allowDeletes: true,
+        protectedPaths: [],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    assert.equal(await readFile(path.join(targetRepo, "managed.txt"), "utf8"), "managed-v2\n");
+    assert.equal(await readFile(path.join(targetRepo, "feature-only.txt"), "utf8"), "local-only\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

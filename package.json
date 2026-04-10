@@ -1,6 +1,6 @@
 {
   "name": "@infinityloop.labs/ai-cli",
-  "version": "0.4.13",
+  "version": "0.4.17",
   "private": false,
   "description": "Template TypeScript CLI library compiled for Node.js",
   "type": "commonjs",

@@ -6,6 +6,7 @@ import { runCommandByKey } from "./runtime";
 import type { Variables } from "./types";
 import { builtinPlugins } from "./plugins";
 
+
 export * from "./types";
 export * from "./args";
 export * from "./config";
@@ -144,11 +145,34 @@ function createNameVariants(name: string | undefined): Variables {
   };
 }
 
+async function commandPlan(options: ReturnType<typeof parseArgs>): Promise<number> {
+  const { config, configPath } = await loadProjectConfig(options.cwd, options.configPath);
+  const variables: Variables = {
+    ...(options.params ?? {}),
+    dryRun: "true",
+  };
+  const stepsCount = await runCommandByKey(
+    config,
+    "sync",
+    options.cwd,
+    variables,
+    builtinPlugins,
+    configPath,
+  );
+  if (configPath) {
+    console.log(`Loaded config: ${path.relative(options.cwd, configPath)}`);
+  }
+  console.log("Command: plan (sync dry-run)");
+  console.log(`Steps executed: ${stepsCount}`);
+  return 0;
+}
+
 export async function runCli(args: string[]): Promise<number> {
   if (args.includes("--help") || args.includes("-h")) {
     console.log("Usage: ill <commandKey> [--name <value>] [--config <path>] [--cwd <path>]");
     console.log("Add:   ill add <widget|service> <Name>");
     console.log("Remove: ill remove <widget|service> <Name>");
+    console.log("Plan:  ill plan [--config <path>] [--cwd <path>]");
     console.log(
       "Init:  ill init [--repo <owner/repo|url>] [--target-repo <owner/repo|url>] [--ref <branch|tag>] [--force]",
     );
@@ -169,6 +193,9 @@ export async function runCli(args: string[]): Promise<number> {
       });
       console.log(`Created config: ${path.relative(options.cwd, configPath)}`);
       return 0;
+    }
+    if (options.commandKey === "plan") {
+      return await commandPlan(options);
     }
 
     const resolved = resolveCommandKeyAndName(options);

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,9 +17,19 @@ type ExecFileError = Error & {
 type MergeTemplatePayload = {
   repo: string;
   ref: string;
-  allowDeletes: boolean;
   protectedPaths: TemplateValue[];
 };
+
+const TEMPLATE_REFS_PREFIX = "refs/infinityloop/templates";
+
+type TemplateRefs = {
+  currentRef: string;
+  nextRef: string;
+};
+
+type TemplateOperation =
+  | { type: "A" | "M" | "D"; path: string }
+  | { type: "R"; oldPath: string; newPath: string; score: string };
 
 function parseProtectedPaths(rawValue: unknown, context: PluginParseContext): TemplateValue[] {
   if (rawValue === undefined) {
@@ -47,17 +58,21 @@ function parseMergeTemplatePayload(rawStep: CommandStepRaw, context: PluginParse
     );
   }
 
-  if (rawStep.allowDeletes !== undefined && typeof rawStep.allowDeletes !== "boolean") {
-    throw new Error(
-      `Config "${context.configPath}" commands["${context.commandKey}"][${context.stepIndex}] type "merge-template" field "allowDeletes" must be boolean.`,
-    );
-  }
-
   return {
     repo: rawStep.repo,
     ref: (rawStep.ref as string | undefined) ?? "main",
-    allowDeletes: (rawStep.allowDeletes as boolean | undefined) ?? true,
     protectedPaths: parseProtectedPaths(rawStep.protectedPaths, context),
+  };
+}
+
+function createTemplateKey(repo: string, ref: string): string {
+  return createHash("sha1").update(`${repo}::${ref}`).digest("hex");
+}
+
+function buildTemplateRefs(templateKey: string): TemplateRefs {
+  return {
+    currentRef: `${TEMPLATE_REFS_PREFIX}/${templateKey}/current`,
+    nextRef: `${TEMPLATE_REFS_PREFIX}/${templateKey}/next`,
   };
 }
 
@@ -111,6 +126,37 @@ async function runGit(args: string[], cwd: string): Promise<{ stdout: string; st
   }
 }
 
+async function resolveGitRef(ref: string, cwd: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--verify", "-q", ref], { cwd });
+    const resolved = stdout.trim();
+    return resolved || undefined;
+  } catch (error) {
+    const execError = error as ExecFileError;
+    if (execError.code === 1 || execError.code === 128) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function commitExists(commit: string, cwd: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", ["cat-file", "-e", `${commit}^{commit}`], { cwd });
+    return true;
+  } catch (error) {
+    const execError = error as ExecFileError;
+    if (execError.code === 128) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function setGitRef(ref: string, commit: string, cwd: string): Promise<void> {
+  await runGit(["update-ref", ref, commit], cwd);
+}
+
 async function ensureGitRepository(cwd: string): Promise<void> {
   const { stdout } = await runGit(["rev-parse", "--is-inside-work-tree"], cwd);
   if (stdout.trim() !== "true") {
@@ -154,11 +200,8 @@ function buildPathspecArgs(protectedPaths: string[]): string[] {
   return ["--", ".", ...protectedPaths.map(entry => `:(exclude)${normalizePathForCompare(entry)}`)];
 }
 
-function buildDiffArgs(payload: MergeTemplatePayload, protectedPaths: string[]): string[] {
-  const diffArgs = ["diff", "--binary", "HEAD", "FETCH_HEAD"];
-  if (!payload.allowDeletes) {
-    diffArgs.splice(1, 0, "--diff-filter=AMRTUXB");
-  }
+function buildDiffArgs(protectedPaths: string[], baseRef: string, targetRef: string): string[] {
+  const diffArgs = ["diff", "--binary", baseRef, targetRef];
   return [...diffArgs, ...buildPathspecArgs(protectedPaths)];
 }
 
@@ -208,9 +251,14 @@ function formatFileList(files: string[]): string {
   return files.map(file => ` - ${file}`).join("\n");
 }
 
-async function collectTemplateDeletions(cwd: string, protectedPaths: string[]): Promise<string[]> {
+async function collectTemplateDeletions(
+  cwd: string,
+  protectedPaths: string[],
+  baseRef: string,
+  targetRef: string,
+): Promise<string[]> {
   const { stdout } = await runGit(
-    ["diff", "--name-only", "--diff-filter=D", "HEAD", "FETCH_HEAD", ...buildPathspecArgs(protectedPaths)],
+    ["diff", "--name-only", "--diff-filter=D", baseRef, targetRef, ...buildPathspecArgs(protectedPaths)],
     cwd,
   );
   return stdout
@@ -219,20 +267,66 @@ async function collectTemplateDeletions(cwd: string, protectedPaths: string[]): 
     .filter(Boolean);
 }
 
-async function isFileTrackedInTemplateHistory(filePath: string, cwd: string): Promise<boolean> {
+async function collectTemplateOperations(params: {
+  cwd: string;
+  protectedPaths: string[];
+  baseRef: string;
+  targetRef: string;
+}): Promise<TemplateOperation[]> {
+  const { stdout } = await runGit(
+    ["diff", "--name-status", "-M", "-C", params.baseRef, params.targetRef, ...buildPathspecArgs(params.protectedPaths)],
+    params.cwd,
+  );
+
+  return stdout
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .map<TemplateOperation | undefined>(line => {
+      const fields = line.split("\t");
+      const status = fields[0];
+      if (!status) {
+        return undefined;
+      }
+      if (status === "A" || status === "M" || status === "D") {
+        const filePath = fields[1];
+        if (!filePath) {
+          return undefined;
+        }
+        return { type: status, path: normalizePathForCompare(filePath) };
+      }
+      if (status.startsWith("R")) {
+        const oldPath = fields[1];
+        const newPath = fields[2];
+        if (!oldPath || !newPath) {
+          return undefined;
+        }
+        return {
+          type: "R",
+          score: status.slice(1),
+          oldPath: normalizePathForCompare(oldPath),
+          newPath: normalizePathForCompare(newPath),
+        };
+      }
+      return undefined;
+    })
+    .filter((item): item is TemplateOperation => Boolean(item));
+}
+
+async function isFileTrackedInTemplateHistory(filePath: string, cwd: string, baseRef: string): Promise<boolean> {
   const normalized = filePath.replace(/\\/g, "/");
   try {
-    await execFileAsync("git", ["cat-file", "-e", `FETCH_HEAD^:${normalized}`], { cwd });
+    await execFileAsync("git", ["cat-file", "-e", `${baseRef}:${normalized}`], { cwd });
     return true;
   } catch {
     return false;
   }
 }
 
-async function filterTemplateOwnedDeletions(files: string[], cwd: string): Promise<string[]> {
+async function filterTemplateOwnedDeletions(files: string[], cwd: string, baseRef: string): Promise<string[]> {
   const owned: string[] = [];
   for (const file of files) {
-    if (await isFileTrackedInTemplateHistory(file, cwd)) {
+    if (await isFileTrackedInTemplateHistory(file, cwd, baseRef)) {
       owned.push(file);
     }
   }
@@ -516,17 +610,36 @@ async function applyPatch(patch: string, cwd: string, autoResolved = false): Pro
 type PatchCheckResult = {
   patch?: string;
   deletedFiles: string[];
+  mode: "template-history" | "legacy-head";
+  deletionOwnershipBaseRef?: string;
 };
 
-async function previewPatch(payload: MergeTemplatePayload, cwd: string, protectedPaths: string[]): Promise<PatchCheckResult> {
-  const diffArgs = buildDiffArgs(payload, protectedPaths);
-  const { stdout: patch } = await runGit(diffArgs, cwd);
+async function previewPatch(params: {
+  payload: MergeTemplatePayload;
+  cwd: string;
+  protectedPaths: string[];
+  targetRef: string;
+  templateBaseRef?: string;
+}): Promise<PatchCheckResult> {
+  const baseRef = params.templateBaseRef ?? "HEAD";
+  const deletionOwnershipBaseRef = params.templateBaseRef ?? `${params.targetRef}^`;
+  const diffArgs = buildDiffArgs(params.protectedPaths, baseRef, params.targetRef);
+  const { stdout: patch } = await runGit(diffArgs, params.cwd);
   if (!patch.trim()) {
-    return { deletedFiles: [] };
+    return {
+      deletedFiles: [],
+      mode: params.templateBaseRef ? "template-history" : "legacy-head",
+      deletionOwnershipBaseRef,
+    };
   }
 
-  const deletedFiles = await collectTemplateDeletions(cwd, protectedPaths);
-  return { patch, deletedFiles };
+  const deletedFiles = await collectTemplateDeletions(params.cwd, params.protectedPaths, baseRef, params.targetRef);
+  return {
+    patch,
+    deletedFiles,
+    mode: params.templateBaseRef ? "template-history" : "legacy-head",
+    deletionOwnershipBaseRef,
+  };
 }
 
 type DeletionDecision = {
@@ -535,7 +648,7 @@ type DeletionDecision = {
 };
 
 type SelectionResult = {
-  cancelled: boolean;
+  action: "continue" | "keep-all" | "abort";
   deletes: Set<string>;
 };
 
@@ -553,7 +666,7 @@ function showCursor(): void {
 
 async function runInteractiveSelection(files: string[]): Promise<SelectionResult> {
   if (files.length === 0) {
-    return { cancelled: false, deletes: new Set() };
+    return { action: "continue", deletes: new Set() };
   }
 
   return new Promise((resolve, reject) => {
@@ -591,13 +704,13 @@ async function runInteractiveSelection(files: string[]): Promise<SelectionResult
       renderedLines = lines.length;
     };
 
-    const finalize = (cancelled: boolean) => {
+    const finalize = (action: SelectionResult["action"]) => {
       if (finished) {
         return;
       }
       finished = true;
       cleanup();
-      resolve({ cancelled, deletes });
+      resolve({ action, deletes });
     };
 
     const moveUp = () => {
@@ -641,12 +754,12 @@ async function runInteractiveSelection(files: string[]): Promise<SelectionResult
       }
 
       if (chunk === "q" || chunk === "Q" || chunk === "\u001b") {
-        finalize(true);
+        finalize(chunk === "\u001b" ? "keep-all" : "abort");
         return;
       }
 
       if (chunk === "\r" || chunk === "\n") {
-        finalize(false);
+        finalize("continue");
       }
     };
 
@@ -665,8 +778,11 @@ async function confirmTemplateDeletions(files: string[]): Promise<DeletionDecisi
   }
 
   const selection = await runInteractiveSelection(files);
-  if (selection.cancelled) {
+  if (selection.action === "abort") {
     return { proceed: false, keep: new Set() };
+  }
+  if (selection.action === "keep-all") {
+    return { proceed: true, keep: new Set(files) };
   }
   const keep = new Set<string>();
   for (const file of files) {
@@ -691,7 +807,7 @@ async function confirmTemplateDeletions(files: string[]): Promise<DeletionDecisi
       if (chunk === "y" || chunk === "Y") {
         resolve({ proceed: true, keep });
       } else {
-        resolve({ proceed: false, keep: new Set() });
+        resolve({ proceed: true, keep: new Set(files) });
       }
     };
 
@@ -715,7 +831,7 @@ function removeKeptDeletionsFromPatch(patch: string, keep: Set<string>): string 
     return patch;
   }
 
-  const diffRegex = /^diff --git a\/(.+?) b\/.*\n[\s\S]*?(?=^diff --git |\u0000|$)/gm;
+  const diffRegex = /^diff --git a\/(.+?) b\/.*(?:\r?\n[\s\S]*?)?(?=^diff --git |\u0000|(?![\s\S]))/gm;
   let result = "";
   let lastIndex = 0;
 
@@ -737,6 +853,19 @@ function removeKeptDeletionsFromPatch(patch: string, keep: Set<string>): string 
   return result;
 }
 
+async function resolveTemplateBaseCommit(cwd: string, refs: TemplateRefs): Promise<string | undefined> {
+  const fromRef = await resolveGitRef(refs.currentRef, cwd);
+  if (fromRef && (await commitExists(fromRef, cwd))) {
+    return fromRef;
+  }
+  return undefined;
+}
+
+function resolveDryRunFlag(variables: Record<string, string | undefined>): boolean {
+  const raw = (variables.dryRun ?? variables.plan ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 async function executeMergeTemplatePayload(
   payload: MergeTemplatePayload,
   context: PluginExecuteContext,
@@ -746,6 +875,9 @@ async function executeMergeTemplatePayload(
 
   const repo = normalizeRepoSource(resolveVariables(payload.repo, context.variables));
   const ref = resolveVariables(payload.ref, context.variables);
+  const dryRun = resolveDryRunFlag(context.variables);
+  const templateKey = createTemplateKey(repo, ref);
+  const refs = buildTemplateRefs(templateKey);
   const remoteName = `ill-template-${Date.now()}`;
   const protectedPathsRaw = payload.protectedPaths.map(value => renderTemplateValue(value, context.variables));
   const protectedPaths = normalizeProtectedPaths(protectedPathsRaw, context.cwd).map(normalizePathForCompare);
@@ -753,45 +885,58 @@ async function executeMergeTemplatePayload(
   try {
     await runGit(["remote", "add", remoteName, repo], context.cwd);
     await runGit(["fetch", "--depth", "20", remoteName, ref], context.cwd);
+    const fetchedCommit = await resolveGitRef("FETCH_HEAD", context.cwd);
+    if (!fetchedCommit) {
+      throw new Error(`Unable to resolve fetched template commit for "${repo}" ref "${ref}".`);
+    }
+    await setGitRef(refs.nextRef, fetchedCommit, context.cwd);
 
-    const { patch, deletedFiles } = await previewPatch(payload, context.cwd, protectedPaths);
-    if (!patch) {
+    const templateBaseCommit = await resolveTemplateBaseCommit(context.cwd, refs);
+    const baseRefForDiff = templateBaseCommit ?? "HEAD";
+    const operations = await collectTemplateOperations({
+      cwd: context.cwd,
+      protectedPaths,
+      baseRef: baseRefForDiff,
+      targetRef: refs.nextRef,
+    });
+
+    const { patch, deletedFiles, mode, deletionOwnershipBaseRef } = await previewPatch({
+      payload,
+      cwd: context.cwd,
+      protectedPaths,
+      targetRef: refs.nextRef,
+      templateBaseRef: templateBaseCommit,
+    });
+
+    const keepFiles = new Set<string>();
+    const pendingDeletions = deletedFiles;
+    const templateOwnedDeletions =
+      mode === "template-history"
+        ? pendingDeletions
+        : deletionOwnershipBaseRef
+          ? await filterTemplateOwnedDeletions(pendingDeletions, context.cwd, deletionOwnershipBaseRef)
+          : [];
+    const templateOwnedDeletionSet = new Set(templateOwnedDeletions);
+    const nonTemplateOwnedDeletions = pendingDeletions.filter(file => !templateOwnedDeletionSet.has(file));
+    nonTemplateOwnedDeletions.forEach(file => keepFiles.add(file));
+
+    if (dryRun) {
+      console.log(`Planned operations: ${operations.length}`);
+      console.log(`Template-owned deletions: ${templateOwnedDeletions.length}`);
+      console.log(`Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`);
       return;
     }
+
     let nextPatch = patch;
-    const pendingDeletions = deletedFiles;
-    const templateOwnedDeletions = await filterTemplateOwnedDeletions(pendingDeletions, context.cwd);
-    if (!payload.allowDeletes && templateOwnedDeletions.length > 0) {
-      throw new Error(
-        `Template update wants to delete these files:\n${formatFileList(templateOwnedDeletions)}\nEnable deletions by setting allowDeletes: true or move the files out of template control.`,
-      );
+    if (nextPatch && keepFiles.size > 0) {
+      nextPatch = removeKeptDeletionsFromPatch(nextPatch, keepFiles);
     }
 
-    if (payload.allowDeletes) {
-      const keepFiles = new Set<string>();
-      const deletionsToConfirm: string[] = [];
-
-      for (const file of pendingDeletions) {
-        deletionsToConfirm.push(file);
-      }
-
-      if (deletionsToConfirm.length > 0) {
-        const decision = await confirmTemplateDeletions(deletionsToConfirm);
-        if (!decision.proceed) {
-          throw new Error("Template merge cancelled by user (deletions skipped).");
-        }
-        decision.keep.forEach(file => keepFiles.add(file));
-      }
-
-      if (keepFiles.size > 0) {
-        nextPatch = removeKeptDeletionsFromPatch(nextPatch, keepFiles);
-        if (!nextPatch.trim()) {
-          return;
-        }
-      }
+    if (nextPatch && nextPatch.trim()) {
+      await applyPatch(nextPatch, context.cwd);
     }
 
-    await applyPatch(nextPatch, context.cwd);
+    await setGitRef(refs.currentRef, fetchedCommit, context.cwd);
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }
