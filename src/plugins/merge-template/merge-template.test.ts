@@ -80,6 +80,66 @@ test("merge-template applies changes without deleting local-only files", async (
   }
 });
 
+test("merge-template keeps local file when template adds same path", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "ill-merge-local-add-conflict-"));
+
+  try {
+    const templateRepo = path.join(root, "template");
+    const targetRepo = path.join(root, "target");
+
+    await mkdir(templateRepo, { recursive: true });
+    await runGit(["init"], templateRepo);
+    await runGit(["config", "user.name", "ILL Test"], templateRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], templateRepo);
+    await writeFile(path.join(templateRepo, "README.md"), "template\n", "utf8");
+    await runGit(["add", "."], templateRepo);
+    await runGit(["commit", "-m", "template v1"], templateRepo);
+    await writeFile(path.join(templateRepo, "infinityloop.config.cjs"), "module.exports = { template: true }\n", "utf8");
+    await runGit(["add", "infinityloop.config.cjs"], templateRepo);
+    await runGit(["commit", "-m", "template adds config"], templateRepo);
+    const templateBranch = await getCurrentBranch(templateRepo);
+
+    await mkdir(targetRepo, { recursive: true });
+    await writeFile(path.join(targetRepo, "README.md"), "template\n", "utf8");
+    await runGit(["init"], targetRepo);
+    await runGit(["config", "user.name", "ILL Test"], targetRepo);
+    await runGit(["config", "user.email", "ill-test@example.com"], targetRepo);
+    await runGit(["add", "."], targetRepo);
+    await runGit(["commit", "-m", "target base"], targetRepo);
+
+    const localConfigPath = path.join(targetRepo, "infinityloop.config.cjs");
+    await writeFile(localConfigPath, "module.exports = { local: true }\n", "utf8");
+
+    const payload = mergeTemplatePlugin.parse(
+      {
+        type: "merge-template",
+        repo: templateRepo,
+        ref: templateBranch,
+        protectedPaths: [],
+      },
+      {
+        configPath: "infinityloop.config.cjs",
+        commandKey: "sync",
+        stepIndex: 0,
+      },
+    );
+
+    const result = await mergeTemplatePlugin.execute(payload, {
+      cwd: targetRepo,
+      variables: {},
+    });
+
+    const localContent = await readFile(localConfigPath, "utf8");
+    assert.equal(localContent, "module.exports = { local: true }\n");
+    assert.equal(
+      result?.messages?.some(message => message.includes("Template additions skipped (existing local paths): 1")),
+      true,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("merge-template removes files when allowDeletes is true", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "ill-merge-delete-"));
 

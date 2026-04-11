@@ -3,6 +3,25 @@ import { normalizeKey } from "./shared/normalize-key";
 
 type PluginRegistry = Map<string, CommandPlugin>;
 
+const COLOR_PURPLE = "\u001B[38;2;157;56;231m";
+const COLOR_ORANGE = "\u001B[38;2;249;121;0m";
+const COLOR_RESET = "\u001B[0m";
+
+function canUseAnsiColors(): boolean {
+  return Boolean(process.stdout.isTTY);
+}
+
+function colorize(value: string, color: string): string {
+  if (!canUseAnsiColors()) {
+    return value;
+  }
+  return `${color}${value}${COLOR_RESET}`;
+}
+
+function normalizeStepLabel(stepType: string): string {
+  return stepType === "merge-template" ? "merge" : stepType;
+}
+
 function resolveVariableValue(key: string, variables: Variables): string | undefined {
   if (variables[key] !== undefined) {
     return variables[key];
@@ -68,8 +87,11 @@ function printStepResult(stepType: string, result?: PluginExecutionResult | void
     return;
   }
 
+  const label = normalizeStepLabel(stepType);
+  const coloredLabel = colorize(`[${label}]`, COLOR_PURPLE);
   for (const message of result.messages) {
-    console.log(`[${stepType}] ${message}`);
+    const coloredMessage = colorize(message, COLOR_ORANGE);
+    console.log(`${coloredLabel} ${coloredMessage}`);
   }
 }
 

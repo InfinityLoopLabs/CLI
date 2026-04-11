@@ -832,31 +832,70 @@ async function confirmTemplateDeletions(files: string[]): Promise<DeletionDecisi
   });
 }
 
-function removeKeptDeletionsFromPatch(patch: string, keep: Set<string>): string {
-  if (keep.size === 0) {
+function filterPatchByPaths(patch: string, skippedPaths: Set<string>): string {
+  if (skippedPaths.size === 0) {
     return patch;
   }
 
-  const diffRegex = /^diff --git a\/(.+?) b\/.*(?:\r?\n[\s\S]*?)?(?=^diff --git |\u0000|(?![\s\S]))/gm;
-  let result = "";
-  let lastIndex = 0;
-
+  const diffHeaderRegex = /^diff --git a\/(.+?) b\/(.+)$/gm;
+  const headers: Array<{ index: number; oldPath: string; newPath: string }> = [];
   let match: RegExpExecArray | null;
-  while ((match = diffRegex.exec(patch)) !== null) {
-    const start = match.index;
-    const end = diffRegex.lastIndex;
-    const block = patch.slice(start, end);
-    const filePath = match[1];
-
-    result += patch.slice(lastIndex, start);
-    if (!filePath || !keep.has(filePath)) {
-      result += block;
-    }
-    lastIndex = end;
+  while ((match = diffHeaderRegex.exec(patch)) !== null) {
+    headers.push({
+      index: match.index,
+      oldPath: normalizePathForCompare(match[1] ?? ""),
+      newPath: normalizePathForCompare(match[2] ?? ""),
+    });
   }
 
-  result += patch.slice(lastIndex);
+  if (headers.length === 0) {
+    return patch;
+  }
+
+  let result = patch.slice(0, headers[0]?.index ?? 0);
+  for (let index = 0; index < headers.length; index += 1) {
+    const current = headers[index];
+    if (!current) {
+      continue;
+    }
+    const next = headers[index + 1];
+    const start = current.index;
+    const end = next ? next.index : patch.length;
+    const shouldSkip = skippedPaths.has(current.oldPath) || skippedPaths.has(current.newPath);
+    if (!shouldSkip) {
+      result += patch.slice(start, end);
+    }
+  }
+
   return result;
+}
+
+function collectAdditionCandidates(operations: TemplateOperation[]): string[] {
+  const candidates = new Set<string>();
+  for (const operation of operations) {
+    if (operation.type === "A") {
+      candidates.add(operation.path);
+      continue;
+    }
+
+    if (operation.type === "R") {
+      candidates.add(operation.newPath);
+    }
+  }
+
+  return Array.from(candidates);
+}
+
+async function collectExistingWorkingTreePaths(paths: string[], cwd: string): Promise<string[]> {
+  const existing: string[] = [];
+  for (const filePath of paths) {
+    const snapshot = await readWorkingTreeSnapshot(filePath, cwd);
+    if (snapshot.exists) {
+      existing.push(filePath);
+    }
+  }
+
+  return existing;
 }
 
 async function resolveTemplateBaseCommit(cwd: string, refs: TemplateRefs): Promise<string | undefined> {
@@ -926,19 +965,25 @@ async function executeMergeTemplatePayload(
     const nonTemplateOwnedDeletions = pendingDeletions.filter(file => !templateOwnedDeletionSet.has(file));
     nonTemplateOwnedDeletions.forEach(file => keepFiles.add(file));
 
+    const additionCandidates = collectAdditionCandidates(operations);
+    const existingAdditionPaths = await collectExistingWorkingTreePaths(additionCandidates, context.cwd);
+    const existingAdditionPathSet = new Set(existingAdditionPaths);
+
     if (dryRun) {
       return {
         messages: [
           `Plan mode: ${operations.length} operation(s)`,
           `Template-owned deletions: ${templateOwnedDeletions.length}`,
           `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+          `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
         ],
       };
     }
 
     let nextPatch = patch;
-    if (nextPatch && keepFiles.size > 0) {
-      nextPatch = removeKeptDeletionsFromPatch(nextPatch, keepFiles);
+    const skippedPaths = new Set<string>([...keepFiles, ...existingAdditionPathSet]);
+    if (nextPatch && skippedPaths.size > 0) {
+      nextPatch = filterPatchByPaths(nextPatch, skippedPaths);
     }
 
     if (nextPatch && nextPatch.trim()) {
@@ -951,6 +996,7 @@ async function executeMergeTemplatePayload(
         `Template sync applied: ${operations.length} operation(s)`,
         `Template-owned deletions applied: ${templateOwnedDeletions.length}`,
         `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+        `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
       ],
     };
   } finally {
