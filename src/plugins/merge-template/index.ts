@@ -886,6 +886,35 @@ function collectAdditionCandidates(operations: TemplateOperation[]): string[] {
   return Array.from(candidates);
 }
 
+function formatTemplateOperation(operation: TemplateOperation): string {
+  if (operation.type === "R") {
+    const score = operation.score ? `${operation.score}%` : "unknown";
+    return `R ${operation.oldPath} -> ${operation.newPath} (rename, similarity ${score})`;
+  }
+
+  if (operation.type === "A") {
+    return `A ${operation.path} (added)`;
+  }
+
+  if (operation.type === "M") {
+    return `M ${operation.path} (modified)`;
+  }
+
+  return `D ${operation.path} (deleted)`;
+}
+
+function toOperationMessages(prefix: string, operations: TemplateOperation[]): string[] {
+  return operations.map(operation => `${prefix} ${formatTemplateOperation(operation)}`);
+}
+
+function shortSha(commit: string | undefined): string {
+  if (!commit) {
+    return "none";
+  }
+
+  return commit.slice(0, 7);
+}
+
 async function collectExistingWorkingTreePaths(paths: string[], cwd: string): Promise<string[]> {
   const existing: string[] = [];
   for (const filePath of paths) {
@@ -968,16 +997,28 @@ async function executeMergeTemplatePayload(
     const additionCandidates = collectAdditionCandidates(operations);
     const existingAdditionPaths = await collectExistingWorkingTreePaths(additionCandidates, context.cwd);
     const existingAdditionPathSet = new Set(existingAdditionPaths);
+    const operationMessages = toOperationMessages("Operation:", operations);
 
     if (dryRun) {
-      return {
-        messages: [
-          `Plan mode: ${operations.length} operation(s)`,
-          `Template-owned deletions: ${templateOwnedDeletions.length}`,
-          `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
-          `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
-        ],
-      };
+      const messages: string[] = [
+        `Plan mode: ${operations.length} operation(s)`,
+        `Template repository: ${repo}`,
+        `Template ref: ${ref}`,
+        `Template baseline: ${shortSha(templateBaseCommit)} -> fetched ${shortSha(fetchedCommit)}`,
+        `Template-owned deletions: ${templateOwnedDeletions.length}`,
+        `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+        `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
+      ];
+      if (operations.length === 0) {
+        messages.push("No template changes detected. Working tree is up to date.");
+      } else {
+        messages.push(...operationMessages);
+      }
+      messages.push(
+        ...existingAdditionPaths.map(filePath => `Skipped add (local path already exists): ${filePath}`),
+      );
+      messages.push(...nonTemplateOwnedDeletions.map(filePath => `Ignored delete (product-owned path): ${filePath}`));
+      return { messages };
     }
 
     let nextPatch = patch;
@@ -991,14 +1032,27 @@ async function executeMergeTemplatePayload(
     }
 
     await setGitRef(refs.currentRef, fetchedCommit, context.cwd);
-    return {
-      messages: [
-        `Template sync applied: ${operations.length} operation(s)`,
-        `Template-owned deletions applied: ${templateOwnedDeletions.length}`,
-        `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
-        `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
-      ],
-    };
+    const messages: string[] = [
+      `Template sync applied: ${operations.length} operation(s)`,
+      `Template repository: ${repo}`,
+      `Template ref: ${ref}`,
+      `Template baseline: ${shortSha(templateBaseCommit)} -> fetched ${shortSha(fetchedCommit)}`,
+      `Template-owned deletions applied: ${templateOwnedDeletions.length}`,
+      `Product-only deletions ignored: ${nonTemplateOwnedDeletions.length}`,
+      `Template additions skipped (existing local paths): ${existingAdditionPaths.length}`,
+    ];
+
+    if (operations.length === 0) {
+      messages.push("No template changes detected. Working tree is up to date.");
+    } else {
+      messages.push(...operationMessages);
+    }
+    messages.push(
+      ...existingAdditionPaths.map(filePath => `Skipped add (local path already exists): ${filePath}`),
+    );
+    messages.push(...nonTemplateOwnedDeletions.map(filePath => `Ignored delete (product-owned path): ${filePath}`));
+
+    return { messages };
   } finally {
     await execFileAsync("git", ["remote", "remove", remoteName], { cwd: context.cwd }).catch(() => undefined);
   }

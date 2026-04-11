@@ -66,7 +66,7 @@ test("merge-template applies changes without deleting local-only files", async (
       },
     );
 
-    await mergeTemplatePlugin.execute(payload, {
+    const result = await mergeTemplatePlugin.execute(payload, {
       cwd: targetRepo,
       variables: {},
     });
@@ -75,6 +75,7 @@ test("merge-template applies changes without deleting local-only files", async (
     assert.equal(coreContent, "core-v2\n");
     const localContent = await readFile(path.join(targetRepo, "local.txt"), "utf8");
     assert.equal(localContent, "keep me\n");
+    assert.equal(result?.messages?.some(message => message.startsWith("Operation: ")), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
