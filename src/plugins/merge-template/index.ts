@@ -14,6 +14,7 @@ import type {
 import { assertTemplateValue, renderTemplateValue, type TemplateValue } from "../../shared/template";
 
 const execFileAsync = promisify(execFile);
+const GIT_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
 
 type ExecFileError = Error & {
   code?: number | string;
@@ -117,7 +118,10 @@ function normalizeRepoSource(repo: string): string {
 
 async function runGit(args: string[], cwd: string): Promise<{ stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await execFileAsync("git", args, { cwd });
+    const { stdout, stderr } = await execFileAsync("git", args, {
+      cwd,
+      maxBuffer: GIT_MAX_BUFFER_BYTES,
+    });
     return { stdout, stderr };
   } catch (error) {
     const execError = error as ExecFileError;
